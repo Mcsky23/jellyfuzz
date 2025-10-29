@@ -7,13 +7,15 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 
+use crate::profiles::profile::JsEngineProfile;
+
 const REPRL_CRFD: RawFd = 100; // child reads control
 const REPRL_CWFD: RawFd = 101; // child writes status
 const REPRL_DRFD: RawFd = 102; // child reads program bytes
 const REPRL_DWFD: RawFd = 103; // child writes fuzzer prints / logs
 
 #[derive(Debug)]
-pub struct FuzzTarget {
+pub struct FuzzProcess {
     pub child: Child,
     data_tx: File,
     data_rx: File,
@@ -36,14 +38,18 @@ fn make_inheritable(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-impl FuzzTarget {
-    pub fn spawn(argv: &[&str], shm_id: &str) -> anyhow::Result<FuzzTarget> {
+impl FuzzProcess {
+    pub fn spawn<T: JsEngineProfile>(profile: &T, shm_id: &str) -> anyhow::Result<FuzzProcess> {
         let (cr_read, cr_write) = pipe()?;
         let (cw_read, cw_write) = pipe()?;
         let (dr_read, dr_write) = pipe()?;
         let (dw_read, dw_write) = pipe()?;
 
-        let mut cmd = Command::new(argv[0]);
+        let mut argv = Vec::new();
+        argv.push(profile.get_path());
+        argv.extend(profile.get_args());
+
+        let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .env("REPRL_MODE", "1")
             .env("SHM_ID", shm_id)

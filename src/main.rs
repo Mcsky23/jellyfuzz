@@ -1,8 +1,9 @@
 mod runner;
+mod profiles;
 
 use libc::{c_int, c_void};
 use std::mem::{self, MaybeUninit};
-use runner::{target::FuzzTarget, coverage::*};
+use runner::{process::FuzzProcess, coverage::*};
 
 const D8_PATH: &str= "/home/mcsky/Desktop/CTF/v8_research2/v8/out/fuzzbuild/d8";
 
@@ -17,7 +18,7 @@ fn main() {
     };
     let shm_id = format!("shm_id_{}_{}", std::process::id(), cov_ctx.id);
 
-    let mut target = FuzzTarget::spawn(&[D8_PATH, &"--fuzzing"], &shm_id)
+    let mut target = FuzzProcess::spawn(&[D8_PATH, &"--fuzzing"], &shm_id)
         .expect("failed to spawn target");
     target.handshake()
         .expect("handshake failed");
