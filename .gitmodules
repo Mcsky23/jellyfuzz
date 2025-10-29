@@ -1,0 +1,3 @@
+[submodule "fuzzilli"]
+	path = fuzzilli
+	url = https://github.com/googleprojectzero/fuzzilli.git
