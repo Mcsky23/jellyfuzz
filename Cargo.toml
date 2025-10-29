@@ -1,0 +1,13 @@
+[package]
+name = "jellyfuzz"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+libc = "0.2.177"
+tokio = "1.48.0"
+
+[build-dependencies]
+cc = "1.2.43"
