@@ -1,53 +1,98 @@
 mod runner;
 mod profiles;
 
-use libc::{c_int, c_void};
-use std::mem::{self, MaybeUninit};
-use runner::{process::FuzzProcess, coverage::*};
+use std::fs;
+use tokio::fs::File as TokioFile;
+use tokio::io::AsyncWriteExt;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use std::path::PathBuf;
+use tokio::task::JoinHandle;
 
-const D8_PATH: &str= "/home/mcsky/Desktop/CTF/v8_research2/v8/out/fuzzbuild/d8";
+use crate::runner::pool::JobResult;
 
-fn main() {
-    let mut cov_ctx = unsafe {
-        let mut ctx = MaybeUninit::<CovContext>::zeroed().assume_init();
-        ctx.id = 0;
-        if cov_initialize(&mut ctx) != 0 {
-            panic!("cov_initialize failred");
+#[tokio::main]
+async fn main() {
+    const NUM_JOBS: usize = 150000;
+    let (job_results_tx, mut job_results_rx) = tokio::sync::mpsc::channel::<(JobResult, PathBuf)>(NUM_JOBS);
+
+    let profile = profiles::v8::V8Profile;
+    let mut pool = runner::pool::FuzzPool::new(14, &profile).unwrap();
+
+    let results_file = TokioFile::create("results.txt").await.unwrap();
+    let mut results_writer = tokio::io::BufWriter::new(results_file);
+    let mut job_handles: Vec<JoinHandle<()>> = Vec::new();
+    let mut submitted_jobs = 0;
+
+    tokio::spawn({
+        async move {
+            let mut cnt = 0;
+            while let Some((job_result, path)) = job_results_rx.recv().await {
+                let result_line = format!(
+                    "\"{:?}\": status_code={}, signal={}, new_coverage={}, is_crash={}, is_timeout={}, edge_hits={}\n",
+                    path,
+                    job_result.status_code,
+                    job_result.signal,
+                    job_result.new_coverage,
+                    job_result.is_crash,
+                    job_result.is_timeout,
+                    job_result.edge_hits.len()
+                );
+                if let Err(e) = results_writer.write_all(result_line.as_bytes()).await {
+                    eprintln!("Failed to write result: {:?}", e);
+                }
+                cnt += 1;
+            }
+            println!("Processed {} job results", cnt);
         }
-        ctx
-    };
-    let shm_id = format!("shm_id_{}_{}", std::process::id(), cov_ctx.id);
+    });
 
-    let mut target = FuzzProcess::spawn(&[D8_PATH, &"--fuzzing"], &shm_id)
-        .expect("failed to spawn target");
-    target.handshake()
-        .expect("handshake failed");
+    let start_time = std::time::Instant::now();
 
-    unsafe {
-        cov_finish_initialization(&mut cov_ctx, 0);
+    for path in fs::read_dir("corpus/").unwrap() {
+        let path = path.unwrap().path();
+        let js_code = fs::read(&path).unwrap();
+        if js_code.windows(7).any(|w| w == b"quit();") {
+            println!("Skipping quit(); script");
+            continue;
+        }
+        let res_rx = pool.schedule_job(js_code).await.unwrap();
+        let job_results_tx = job_results_tx.clone();
+        let handle = tokio::spawn(async move {
+            let mut res_rx = res_rx;
+            match res_rx.recv().await {
+                Some(Ok(job_result)) => {
+                    job_results_tx.send((job_result, path)).await.unwrap();
+                }
+                Some(Err(e)) => {
+                    eprintln!("Job Error: {:?}", e);
+                }
+                None => {
+                    eprintln!("Job result channel closed before receiving outcome");
+                }
+            }
+        });
+        job_handles.push(handle);
+        if job_handles.len() >= 10000 {
+            for handle in job_handles.drain(..) {
+                if let Err(err) = handle.await {
+                    eprintln!("Result task panicked: {:?}", err);
+                }
+            }
+        }
+        submitted_jobs += 1;
+        if submitted_jobs >= NUM_JOBS {
+            break;
+        }
     }
 
-    let script = br#"
-        fuzzilli("FUZZILLI_PRINT", "hello from reprl");
-        Math.sin(0.1);
-    "#;
-
-    unsafe { cov_clear_bitmap(&mut cov_ctx); }
-    let rc = target.execute(script)
-        .expect("execution failed");
-    println!("engine returned {}", rc);
-
-    let mut edges = EdgeSet {
-        count: 0,
-        edge_indices: std::ptr::null_mut(),
-    };
-    let new_cov = unsafe { cov_evaluate(&mut cov_ctx, &mut edges) };
-    if new_cov == 1 && !edges.edge_indices.is_null() {
-        let slice =
-            unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
-        // println!("new edges: {:?}", slice);
-        unsafe { libc::free(edges.edge_indices as *mut c_void) };
+    for handle in job_handles {
+        if let Err(err) = handle.await {
+            eprintln!("Result task panicked: {:?}", err);
+        }
     }
 
-    unsafe { cov_shutdown(&mut cov_ctx); }    
+    let duration = start_time.elapsed();
+    println!("Executed {} jobs in {:?}", NUM_JOBS, duration);
+
 }

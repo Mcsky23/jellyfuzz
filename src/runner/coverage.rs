@@ -32,6 +32,10 @@ pub struct EdgeSet {
     pub edge_indices: *mut u32,
 }
 
+// These contexts own process-local shared memory handles, so moving them across
+// threads is safe as long as we uphold the unique access invariants ourselves
+unsafe impl Send for CovContext {}
+
 unsafe extern "C" {
     pub fn cov_initialize(ctx: *mut CovContext) -> c_int;
     pub fn cov_finish_initialization(ctx: *mut CovContext, track_edges: c_int);
