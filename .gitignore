@@ -1,2 +1,5 @@
 /target
 /corpus
+/results.txt
+/.vscode
+/corpus_raw
