@@ -2,13 +2,11 @@ use std::collections::HashMap;
 use swc_ecma_visit::swc_ecma_ast::*;
 use swc_ecma_visit::{VisitMut, VisitMutWith};
 
-use crate::mutators::AstMutator;
-
 /// This minifier renames variables and functions to shorter names
 /// Logic is the following: for each function, rename all variables
-/// inside the function, then call function renamer inside that 
+/// inside the function, then call function renamer inside that
 /// function and so on.
-/// 
+///
 /// TODO: handle classes and class methods
 
 pub struct Minifier;
@@ -134,10 +132,10 @@ impl VisitMut for FuncRenamer {
     }
 }
 
-impl AstMutator for Minifier {
+impl Minifier {
     /// Rename variable names to v0, v1, v2, ...
     /// Comments are already removed when parsing the AST
-    fn mutate(mut ast: Script) -> anyhow::Result<Script> {
+    pub fn mutate(&self, mut ast: Script) -> anyhow::Result<Script> {
         let mut var_visitor = VarRenamer::new();
         ast.visit_mut_with(&mut var_visitor);
         let mut func_visitor = FuncRenamer::new();

@@ -1,6 +1,5 @@
 use crate::profiles::profile::JsEngineProfile;
 
-
 pub struct V8Profile;
 
 impl JsEngineProfile for V8Profile {
@@ -27,4 +26,3 @@ impl JsEngineProfile for V8Profile {
         400
     }
 }
-

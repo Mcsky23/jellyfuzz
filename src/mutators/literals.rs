@@ -1,11 +1,12 @@
 use anyhow::Result;
+use rand::Rng;
 use rand::seq::IndexedRandom;
-use rand::{thread_rng, Rng};
 use swc_atoms::Atom;
+use swc_ecma_visit::{Visit, VisitMut, VisitMutWith};
 use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
-use swc_ecma_visit::{VisitMut, VisitMutWith, Visit};
+
 use crate::mutators::AstMutator;
-use crate::utils::rand_utils::{boolean_with_probability, gaussian_sample, random_weighted_choice, small_delta};
+use crate::utils::rand_utils::{random_weighted_choice, small_delta};
 
 /// NumericTweaker — improved version
 pub struct NumericTweaker;
@@ -18,9 +19,12 @@ struct NumericTweakerVisitor {
 
 impl NumericTweakerVisitor {
     fn new(lit_count: usize) -> Self {
-        let mut rng = thread_rng();
-        let idx_to_mutate = rng.gen_range(0..lit_count);
-        println!("NumericTweaker: chosen literal index to mutate: {}", idx_to_mutate);
+        let mut rng = rand::rng();
+        let idx_to_mutate = rng.random_range(0..lit_count);
+        // println!(
+        //     "NumericTweaker: chosen literal index to mutate: {}",
+        //     idx_to_mutate
+        // );
         Self {
             rng,
             idx_to_mutate,
@@ -28,10 +32,9 @@ impl NumericTweakerVisitor {
         }
     }
 
-
     /// Choose a random power-of-two value (2^n) within a safe exponent range.
     fn random_pow2(&mut self) -> f64 {
-        let exp = self.rng.gen_range(0i32..=60i32);
+        let exp = self.rng.random_range(0i32..=60i32);
         2f64.powi(exp)
     }
 
@@ -63,7 +66,10 @@ impl NumericTweakerVisitor {
         let mut s = format!("{:.12}", value);
         while s.contains('.') && (s.ends_with('0') || s.ends_with('.')) {
             s.pop();
-            if s.ends_with('.') { s.pop(); break; }
+            if s.ends_with('.') {
+                s.pop();
+                break;
+            }
         }
         s
     }
@@ -150,16 +156,18 @@ impl VisitMut for NumericTweakerVisitor {
                 "pow2" => {
                     new_value = self.random_pow2();
                     // sometimes negative pow2
-                    if self.rng.gen_bool(0.1) { new_value = -new_value; }
+                    if self.rng.random_bool(0.1) {
+                        new_value = -new_value;
+                    }
                 }
                 "random_fraction" => {
-                    new_value = self.rng.gen_range(0.0f64..=1.0f64);
+                    new_value = self.rng.random_range(0.0f64..=1.0f64);
                 }
                 "truncate_int" => {
                     new_value = new_value.trunc();
                 }
                 "scale_mult" => {
-                    let factor = if self.rng.gen_bool(0.5) { 0.5 } else { 2.0 };
+                    let factor = if self.rng.random_bool(0.5) { 0.5 } else { 2.0 };
                     new_value *= factor;
                 }
                 _ => {}
@@ -182,18 +190,26 @@ impl VisitMut for NumericTweakerVisitor {
 }
 
 impl AstMutator for NumericTweaker {
-    fn mutate(mut ast: Script) -> Result<Script> {
+    fn mutate(&self, mut ast: Script) -> Result<Script> {
         let mut counter = CountNumericLiterals { count: 0 };
         ast.visit_with(&mut counter);
+        if counter.count == 0 {
+            // No numeric literals to mutate
+            return Ok(ast);
+        }
 
         // randomly choose a literal index to mutate
-        let mut visitor = NumericTweakerVisitor::new(
-            counter.count
-        );
+        let mut visitor = NumericTweakerVisitor::new(counter.count);
         ast.visit_mut_with(&mut visitor);
 
         // TODO: log telemetry about mutations
 
         Ok(ast)
+    }
+}
+
+impl NumericTweaker {
+    pub fn new() -> Self {
+        Self
     }
 }

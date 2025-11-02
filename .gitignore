@@ -2,6 +2,7 @@
 /corpus
 /results.txt
 /.vscode
-/corpus_raw
+/corpus_raw*
 /test.js
 /test_out.js
+/single_test_output

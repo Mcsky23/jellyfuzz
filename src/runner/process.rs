@@ -25,7 +25,7 @@ pub struct FuzzProcess {
     data_tx: File,
     data_rx: File,
     ctrl_tx: File,
-    ctrl_rx: File
+    ctrl_rx: File,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -52,10 +52,22 @@ impl FuzzProcess {
         let path = profile.get_path();
         let args = profile.get_args();
         let timeout = profile.get_timeout();
-        Self::spawn_with_details(path, args, shm_id.to_string(), timeout, profile.get_jobs_per_process())
+        Self::spawn_with_details(
+            path,
+            args,
+            shm_id.to_string(),
+            timeout,
+            profile.get_jobs_per_process(),
+        )
     }
 
-    fn spawn_with_details(path: String, args: Vec<String>, shm_id: String, timeout: u64, max_executions: usize) -> anyhow::Result<FuzzProcess> {
+    fn spawn_with_details(
+        path: String,
+        args: Vec<String>,
+        shm_id: String,
+        timeout: u64,
+        max_executions: usize,
+    ) -> anyhow::Result<FuzzProcess> {
         let (child, ctrl_tx, ctrl_rx, data_tx, data_rx) =
             Self::launch_process(&path, &args, &shm_id)?;
 
@@ -157,7 +169,10 @@ impl FuzzProcess {
     pub fn execute(&mut self, script: &[u8]) -> io::Result<ExecutionStatus> {
         if self.crt_executions >= self.max_executions {
             if let Err(e) = self.restart() {
-                return Err(io::Error::new(io::ErrorKind::Other, format!("failed to restart process: {}", e)));
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("failed to restart process: {}", e),
+                ));
             }
             self.handshake()?;
             self.crt_executions = 0;
@@ -165,7 +180,7 @@ impl FuzzProcess {
         self.ctrl_tx.write_all(b"exec")?;
         self.ctrl_tx
             .write_all(&(script.len() as u64).to_ne_bytes())?;
-        
+
         self.data_tx.write_all(script)?;
         self.data_tx.flush()?;
 
@@ -177,7 +192,6 @@ impl FuzzProcess {
         self.crt_executions += 1;
         Ok(ExecutionStatus { exit_code, signal })
     }
-
 }
 
 impl FuzzProcess {
@@ -192,7 +206,10 @@ impl FuzzProcess {
         if original_flags == -1 {
             return Err(io::Error::last_os_error());
         }
-        let _restore = FdFlagRestore { fd, flags: original_flags };
+        let _restore = FdFlagRestore {
+            fd,
+            flags: original_flags,
+        };
         if unsafe { libc::fcntl(fd, libc::F_SETFL, original_flags | libc::O_NONBLOCK) } == -1 {
             return Err(io::Error::last_os_error());
         }
@@ -206,7 +223,7 @@ impl FuzzProcess {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "child closed status pipe",
-                    ))
+                    ));
                 }
                 Ok(n) => offset += n,
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
@@ -215,7 +232,10 @@ impl FuzzProcess {
                         // Tear down hung child so it doesn't block future jobs.
                         let _ = self.child.kill();
                         let _ = self.child.wait();
-                        return Err(io::Error::new(io::ErrorKind::TimedOut, "execution timed out"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "execution timed out",
+                        ));
                     }
                     thread::sleep(Duration::from_millis(1));
                 }

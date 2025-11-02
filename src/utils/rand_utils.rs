@@ -1,8 +1,11 @@
-use weighted_rand::builder::*;
 use rand::{Rng, rngs::ThreadRng};
+use weighted_rand::builder::*;
 
 pub fn random_weighted_choice<T: Clone>(choices: &[(T, u32)]) -> T {
-    let weights = choices.iter().map(|(_, weight)| *weight).collect::<Vec<u32>>();
+    let weights = choices
+        .iter()
+        .map(|(_, weight)| *weight)
+        .collect::<Vec<u32>>();
     let builder = WalkerTableBuilder::new(&weights);
     let wa_table = builder.build();
     let index = wa_table.next();
