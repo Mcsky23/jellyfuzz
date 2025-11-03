@@ -177,6 +177,8 @@ impl FuzzWorker {
                 if err.kind() == io::ErrorKind::TimedOut {
                     (-1, 0, false)
                 } else {
+                    println!("code: {:?}", js_code);
+                    println!("Execution error: {:?}", err);
                     (-1, -1, true)
                 }
             }
@@ -368,5 +370,11 @@ impl FuzzPool {
     /// Start fuzzing
     pub async fn start_fuzzing(&mut self) {
         unimplemented!();
+    }
+}
+
+impl Drop for FuzzWorker {
+    fn drop(&mut self) {
+        let _ = self.process.child.kill();
     }
 }

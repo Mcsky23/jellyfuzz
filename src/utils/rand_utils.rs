@@ -1,15 +1,19 @@
 use rand::{Rng, rngs::ThreadRng};
-use weighted_rand::builder::*;
 
-pub fn random_weighted_choice<T: Clone>(choices: &[(T, u32)]) -> T {
-    let weights = choices
-        .iter()
-        .map(|(_, weight)| *weight)
-        .collect::<Vec<u32>>();
-    let builder = WalkerTableBuilder::new(&weights);
-    let wa_table = builder.build();
-    let index = wa_table.next();
-    choices[index].0.clone()
+pub fn random_weighted_choice<T: Clone, R: Copy + Into<f64>>(
+    rng: &mut ThreadRng,
+    choices: &[(T, R)],
+) -> T {
+    let total_weight: f64 = choices.iter().map(|&(_, weight)| weight.into()).sum();
+    let mut roll: f64 = rng.gen_range(0.0..total_weight);
+    for (item, weight) in choices {
+        let w: f64 = (*weight).into();
+        if roll < w {
+            return item.clone();
+        }
+        roll -= w;
+    }
+    choices.last().unwrap().0.clone()
 }
 
 pub fn boolean_with_probability(probability: f64) -> bool {

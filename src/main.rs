@@ -262,7 +262,13 @@ async fn ingest_initial_corpus(
             let reward = compute_reward(&job_result);
             let mut manager = corpus_manager_clone.lock().await;
             match manager
-                .add_entry(&new_code, job_result.edge_hits.clone(), reward, exec_time, job_result.is_timeout)
+                .add_entry(
+                    &new_code,
+                    job_result.edge_hits.clone(),
+                    reward,
+                    exec_time,
+                    job_result.is_timeout,
+                )
                 .await
             {
                 Ok(Some(_)) => {
@@ -506,35 +512,51 @@ async fn single_test(script_path: &str, profile: &str) {
         if i % 1000 == 0 {
             println!("Single test iteration {}", i);
         }
-        let mutated_ast = mutators[0]
-            .mutate(mutated_ast.clone())
-            .expect("numeric mutation failed");
-        let mutated_ast = mutated_ast.clone();
-        let mutated_code = generate_js(mutated_ast).expect("code generation failed");
 
-        let mut result_rx = pool
-            .schedule_job(mutated_code.clone())
-            .await
-            .expect("failed to schedule job");
+        for mutator in &mutators {
+            let mutated_ast = mutator
+                .mutate(mutated_ast.clone())
+                .expect("numeric mutation failed");
+            let mutated_ast = mutated_ast.clone();
+            let mutated_code = generate_js(mutated_ast).expect("code generation failed");
 
-        let corpus_manager = Arc::clone(&corpus_manager);
-        let handle = tokio::spawn(async move {
-            let job_result = result_rx
-                .recv()
+            let mut result_rx = pool
+                .schedule_job(mutated_code.clone())
                 .await
-                .expect("failed to receive job result")
-                .expect("job execution failed");
-            if job_result.new_coverage && job_result.status_code == 0 {
-                corpus_manager
-                    .lock()
-                    .await
-                    .add_entry(&mutated_code, job_result.edge_hits.clone(), 1.0, 0, job_result.is_timeout)
-                    .await
-                    .expect("failed to add new corpus entry");
-            }
-        });
-        handles.push(handle);
+                .expect("failed to schedule job");
 
+            let corpus_manager = Arc::clone(&corpus_manager);
+            let mutator = mutator.clone();
+            let handle = tokio::spawn(async move {
+                let job_result = result_rx
+                    .recv()
+                    .await
+                    .expect("failed to receive job result")
+                    .expect("job execution failed");
+                if job_result.new_coverage && job_result.status_code == 0 {
+                    corpus_manager
+                        .lock()
+                        .await
+                        .add_entry(
+                            &mutated_code,
+                            job_result.edge_hits.clone(),
+                            1.0,
+                            0,
+                            job_result.is_timeout,
+                        )
+                        .await
+                        .expect("failed to add new corpus entry");
+                }
+                if job_result.is_crash {
+                    println!("Code: {:?}", mutated_code);
+                    panic!("How did we find a crash?");
+                }
+                if job_result.is_timeout || job_result.status_code != 0 {
+                    mutator.record_invalid();
+                }
+            });
+            handles.push(handle);
+        }
         if handles.len() >= 10000 {
             for handle in handles.drain(..) {
                 handle.await.expect("single test task failed");
@@ -543,6 +565,22 @@ async fn single_test(script_path: &str, profile: &str) {
     }
     let elapsed = start.elapsed();
     println!("Single test completed in {:?}", elapsed);
+    for handle in handles {
+        handle.await.expect("single test task failed");
+    }
+    for mutator in &mutators {
+        let stats = mutator.stats_snapshot();
+        let success_rate = if stats.uses == 0 {
+            0.0
+        } else {
+            (stats.uses - stats.invalid_count) as f64 / stats.uses as f64 * 100.0
+        };
+        println!(
+            "Mutator {}: success rate: {:.2}%",
+            mutator.name(),
+            success_rate
+        );
+    }
 }
 
 async fn mutator_test(script_path: &str, mutator: Arc<ManagedMutator>, profile: &str) {

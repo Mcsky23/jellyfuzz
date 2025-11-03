@@ -147,14 +147,16 @@ impl CorpusManager {
             // For timeouts, we store the script in a separate directory
             let timeout_dir = self.root.join("timeouts");
             if fs::metadata(&timeout_dir).await.is_err() {
-                fs::create_dir_all(&timeout_dir)
-                    .await
-                    .with_context(|| format!("failed to create timeout directory {:?}", timeout_dir))?;
+                fs::create_dir_all(&timeout_dir).await.with_context(|| {
+                    format!("failed to create timeout directory {:?}", timeout_dir)
+                })?;
             }
             let timeout_path = timeout_dir.join(&file_name);
             fs::write(&timeout_path, script_bytes)
                 .await
-                .with_context(|| format!("failed to write timeout corpus entry {:?}", timeout_path))?;
+                .with_context(|| {
+                    format!("failed to write timeout corpus entry {:?}", timeout_path)
+                })?;
             return Ok(None);
         }
 
