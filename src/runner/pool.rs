@@ -1,11 +1,11 @@
 use libc::c_void;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::yield_now;
 
 static NEXT_COV_CONTEXT_ID: AtomicI32 = AtomicI32::new(0);
@@ -57,6 +57,7 @@ pub struct FuzzWorker {
     cov_ctx: CovContext,
     job_queue: mpsc::Receiver<Job>,
     job_tx: mpsc::Sender<Job>, // interface to send jobs to this worker
+    edge_tracker: Arc<RwLock<EdgeTracker>>,
 }
 
 /// The fuzzer pool contains multiple fuzz processes
@@ -64,10 +65,11 @@ pub struct FuzzPool {
     job_senders: Vec<mpsc::Sender<Job>>,
     next_worker: usize,
     job_capacity: Arc<Semaphore>,
+    edge_tracker: Arc<RwLock<EdgeTracker>>,
 }
 
 /// Helper struct to track seen edges during executions
-/// 
+///
 /// When we see new coverage on an execution, we re-run the same input and then intersect
 /// the 2 edge sets to filter out flaky edges. If we see that a certain edge is not part
 /// of the intersection more than `max_resets` times, we blacklist it.
@@ -78,7 +80,10 @@ pub struct EdgeTracker {
 }
 
 impl FuzzWorker {
-    pub fn new<T: JsEngineProfile>(profile: &T) -> anyhow::Result<Self> {
+    pub fn new<T: JsEngineProfile>(
+        profile: &T,
+        edge_tracker: Arc<RwLock<EdgeTracker>>,
+    ) -> anyhow::Result<Self> {
         let mut cov_ctx = unsafe {
             let mut ctx = MaybeUninit::<CovContext>::zeroed().assume_init();
             ctx.id = NEXT_COV_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -103,6 +108,7 @@ impl FuzzWorker {
             cov_ctx,
             job_queue: job_queue_rx,
             job_tx: job_queue_tx,
+            edge_tracker,
         })
     }
 
@@ -233,7 +239,8 @@ impl FuzzWorker {
 
         let second_slice =
             unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
-        let first_set: HashSet<u32> = candidate_edges.iter().copied().collect();
+        let mut first_set: HashSet<u32> = HashSet::with_capacity(candidate_edges.len());
+        first_set.extend(candidate_edges.iter());
         let mut stable_edges = Vec::new();
         for &edge in second_slice {
             if first_set.contains(&edge) {
@@ -247,6 +254,20 @@ impl FuzzWorker {
         if new_cov != 1 {
             return Ok(Vec::new());
         }
+
+        // Update edge tracker
+        let stable_edges = {
+            let mut tracker = self.edge_tracker.blocking_write();
+            let mut stable_edges_curated = vec![];
+            for &edge in &stable_edges {
+                if tracker.blacklist.contains(&edge) || tracker.seen_edges.contains(&edge) {
+                    continue;
+                }
+                stable_edges_curated.push(edge);
+                tracker.seen_edges.insert(edge);
+            }
+            stable_edges_curated
+        };
 
         Ok(stable_edges)
     }
@@ -268,8 +289,13 @@ impl FuzzWorker {
 impl FuzzPool {
     pub fn new<T: JsEngineProfile>(num_workers: usize, profile: &T) -> anyhow::Result<Self> {
         let mut job_senders = Vec::new();
+        let edge_tracker = Arc::new(RwLock::new(EdgeTracker {
+            seen_edges: HashSet::new(),
+            blacklist: HashSet::new(),
+            max_resets: 1000,
+        }));
         for _ in 0..num_workers {
-            let worker = FuzzWorker::new(profile)?;
+            let worker = FuzzWorker::new(profile, edge_tracker.clone())?;
             let job_tx = worker.get_job_sender();
             tokio::spawn(async move {
                 if let Err(err) = worker.run().await {
@@ -283,6 +309,11 @@ impl FuzzPool {
             job_senders,
             next_worker: 0,
             job_capacity: Arc::new(Semaphore::new(queue_capacity)),
+            edge_tracker: Arc::new(RwLock::new(EdgeTracker {
+                seen_edges: HashSet::new(),
+                blacklist: HashSet::new(),
+                max_resets: 3,
+            })),
         })
     }
 

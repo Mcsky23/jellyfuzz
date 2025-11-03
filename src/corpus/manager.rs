@@ -128,6 +128,7 @@ impl CorpusManager {
         edge_hits: Vec<u32>,
         reward: f64,
         exec_time_ms: u64,
+        is_timeout: bool,
     ) -> Result<Option<CorpusEntry>> {
         let fingerprint = compute_fingerprint(script_bytes, &edge_hits);
         if self.contains_fingerprint(fingerprint) {
@@ -140,6 +141,22 @@ impl CorpusManager {
         let file_name = format!("seed_{id}.js");
         let relative_path = PathBuf::from(&file_name);
         let absolute_path = self.root.join(&relative_path);
+
+        if is_timeout {
+            println!("Storing timeout corpus entry {:?}", file_name);
+            // For timeouts, we store the script in a separate directory
+            let timeout_dir = self.root.join("timeouts");
+            if fs::metadata(&timeout_dir).await.is_err() {
+                fs::create_dir_all(&timeout_dir)
+                    .await
+                    .with_context(|| format!("failed to create timeout directory {:?}", timeout_dir))?;
+            }
+            let timeout_path = timeout_dir.join(&file_name);
+            fs::write(&timeout_path, script_bytes)
+                .await
+                .with_context(|| format!("failed to write timeout corpus entry {:?}", timeout_path))?;
+            return Ok(None);
+        }
 
         fs::write(&absolute_path, script_bytes)
             .await
@@ -158,7 +175,7 @@ impl CorpusManager {
             last_selected_ts: None,
         };
         self.entries.push(entry.clone());
-        self.persist().await?;
+        self.persist().await?; // TODO: optimize by only calling this function after a number of additions
         Ok(Some(entry))
     }
 

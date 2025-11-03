@@ -19,35 +19,52 @@ use tokio::time::{Instant, sleep};
 
 use crate::corpus::CorpusManager;
 use crate::mutators::minifier::Minifier;
-use crate::mutators::{ManagedMutator, get_ast_mutators};
+use crate::mutators::{ManagedMutator, get_ast_mutators, get_mutator_by_name};
 use crate::parsing::parser::{generate_js, parse_js};
+use crate::profiles::profile::JsEngineProfile;
 use crate::runner::pool::{FuzzPool, JobResult};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short, long, help = "Path to output progress output directory")]
     output_dir: PathBuf,
 
     // overwrite existing corpus files and start from scratch
-    #[arg(short, long, action=clap::ArgAction::SetTrue)]
+    #[arg(short, long, action=clap::ArgAction::SetTrue, help = "Overwrite existing corpus directory if it exists and restart progress")]
     overwrite: Option<bool>,
     // if overwrite is true, we need an initial corpus directory to read from
-    #[arg(short, long)]
+    #[arg(
+        short,
+        long,
+        requires = "overwrite",
+        help = "Path to initial corpus directory to ingest when starting from scratch"
+    )]
     initial_corpus: Option<PathBuf>,
 
     // resume from existing corpus
-    #[arg(short, long, action)]
+    #[arg(short, long, action=clap::ArgAction::SetTrue, help = "Resume progress from existing corpus directory")]
     resume: Option<bool>,
     // the profile to use
-    #[arg(short, long)]
+    #[arg(short, long, help = "Fuzzing profile to use")]
     profile: String,
     // number of workers
-    #[arg(short, long, default_value_t = 1)]
+    #[arg(
+        short,
+        long,
+        default_value_t = 1,
+        help = "Number of worker processes to use"
+    )]
     workers: usize,
     // single test mode
-    #[arg(long)]
+    #[arg(long, help = "DEBUG: Run tests with a single specified input file")]
     single_test: Option<String>,
+    // mutator test mode
+    #[arg(
+        long,
+        help = "DEBUG: Run a specified mutator on a given input file and output the result"
+    )]
+    mutator_test: Option<String>,
 }
 
 #[tokio::main]
@@ -57,6 +74,11 @@ async fn main() -> Result<()> {
 
     if let Some(test_path) = args.single_test.as_deref() {
         single_test(test_path, &args.profile).await;
+        return Ok(());
+    }
+    if let Some(mutator) = args.mutator_test.as_deref() {
+        let mutator = get_mutator_by_name(mutator).expect("unknown mutator");
+        mutator_test("test.js", mutator, &args.profile).await;
         return Ok(());
     }
 
@@ -219,11 +241,11 @@ async fn ingest_initial_corpus(
             let mut result_rx = result_rx;
             let job_result = match result_rx.recv().await {
                 Some(Ok(res)) => res,
-            Some(Err(err)) => {
-                eprintln!("Worker rejected {:?}: {:?}", path_clone, err);
-                skipped_clone.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
+                Some(Err(err)) => {
+                    eprintln!("Worker rejected {:?}: {:?}", path_clone, err);
+                    skipped_clone.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 None => {
                     eprintln!("Worker dropped job for {:?}", path_clone);
                     skipped_clone.fetch_add(1, Ordering::Relaxed);
@@ -240,7 +262,7 @@ async fn ingest_initial_corpus(
             let reward = compute_reward(&job_result);
             let mut manager = corpus_manager_clone.lock().await;
             match manager
-                .add_entry(&new_code, job_result.edge_hits.clone(), reward, exec_time)
+                .add_entry(&new_code, job_result.edge_hits.clone(), reward, exec_time, job_result.is_timeout)
                 .await
             {
                 Ok(Some(_)) => {
@@ -415,6 +437,7 @@ async fn run_fuzz_loop(
                     job_result.edge_hits.clone(),
                     reward.max(0.0),
                     exec_time_ms,
+                    job_result.is_timeout,
                 )
                 .await
             };
@@ -467,54 +490,81 @@ async fn single_test(script_path: &str, profile: &str) {
     let mutated_ast = minifier.mutate(ast).expect("minification failed");
     // let mutated_code = generate_js(mutated_ast).expect("code generation failed");
 
-    let mut pool = FuzzPool::new(1, &profiles::get_profile(profile).unwrap())
+    let mut pool = FuzzPool::new(14, &profiles::get_profile(profile).unwrap())
         .expect("failed to create fuzz pool");
 
     let mutators = get_ast_mutators();
     let root_path = std::path::PathBuf::from("single_test_output");
-    let mut corpus_manager = CorpusManager::load(root_path.clone())
+    let corpus_manager = CorpusManager::load(root_path.clone())
         .await
         .expect("failed to load corpus manager");
+    let corpus_manager = Arc::new(Mutex::new(corpus_manager));
 
-    for i in 0..10000 {
+    let mut handles = vec![];
+    let start = Instant::now();
+    for i in 0..20000 {
         if i % 1000 == 0 {
             println!("Single test iteration {}", i);
         }
         let mutated_ast = mutators[0]
             .mutate(mutated_ast.clone())
             .expect("numeric mutation failed");
+        let mutated_ast = mutated_ast.clone();
         let mutated_code = generate_js(mutated_ast).expect("code generation failed");
 
         let mut result_rx = pool
             .schedule_job(mutated_code.clone())
             .await
             .expect("failed to schedule job");
-        let job_result = result_rx
-            .recv()
-            .await
-            .expect("failed to receive job result")
-            .expect("job execution failed");
 
-        if job_result.new_coverage {
-            corpus_manager
-                .add_entry(
-                    &mutated_code,
-                    job_result.edge_hits.clone(),
-                    1.0,
-                    0,
-                )
+        let corpus_manager = Arc::clone(&corpus_manager);
+        let handle = tokio::spawn(async move {
+            let job_result = result_rx
+                .recv()
                 .await
-                .expect("failed to add new corpus entry");
-        }
+                .expect("failed to receive job result")
+                .expect("job execution failed");
+            if job_result.new_coverage && job_result.status_code == 0 {
+                corpus_manager
+                    .lock()
+                    .await
+                    .add_entry(&mutated_code, job_result.edge_hits.clone(), 1.0, 0, job_result.is_timeout)
+                    .await
+                    .expect("failed to add new corpus entry");
+            }
+        });
+        handles.push(handle);
 
-        // println!(
-        //     "Execution result: exit {}, signal {}, new_coverage {}, is_crash {}, is_timeout {}, edge_hits {:?}",
-        //     job_result.status_code,
-        //     job_result.signal,
-        //     job_result.new_coverage,
-        //     job_result.is_crash,
-        //     job_result.is_timeout,
-        //     job_result.edge_hits
-        // );
+        if handles.len() >= 10000 {
+            for handle in handles.drain(..) {
+                handle.await.expect("single test task failed");
+            }
+        }
     }
+    let elapsed = start.elapsed();
+    println!("Single test completed in {:?}", elapsed);
+}
+
+async fn mutator_test(script_path: &str, mutator: Arc<ManagedMutator>, profile: &str) {
+    let source = fs::read_to_string(script_path).expect("failed to read test script");
+    let ast = parse_js(source).expect("failed to parse test script");
+    let mutated_ast = mutator.mutate(ast).expect("mutation failed");
+    let mutated_code = generate_js(mutated_ast).expect("code generation failed");
+    fs::write("test_out.js", &mutated_code).expect("failed to write mutated code");
+
+    let profile = profiles::get_profile(profile).expect("unknown profile");
+    let mut pool = FuzzPool::new(1, &profile).expect("failed to create fuzz pool");
+    let mut result_rx = pool
+        .schedule_job(mutated_code.clone())
+        .await
+        .expect("failed to schedule job");
+    let job_result = result_rx
+        .recv()
+        .await
+        .expect("failed to receive job result")
+        .expect("job execution failed");
+    println!(
+        "Mutator test result: exit {}, signal {}, timeout {}, new coverage {}",
+        job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage
+    );
 }

@@ -71,7 +71,17 @@ impl ManagedMutator {
 
 pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
     vec![Arc::new(ManagedMutator::new(
-        "numeric_tweaker",
+        "NumericTweaker",
         Box::new(literals::NumericTweaker::new()),
     ))]
+}
+
+pub fn get_mutator_by_name(name: &str) -> Option<Arc<ManagedMutator>> {
+    let mutators = get_ast_mutators();
+    for m in mutators {
+        if m.name() == name {
+            return Some(m.clone());
+        }
+    }
+    None
 }

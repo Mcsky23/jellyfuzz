@@ -8,13 +8,16 @@ use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 use crate::mutators::AstMutator;
 use crate::utils::rand_utils::{random_weighted_choice, small_delta};
 
-/// NumericTweaker — improved version
+/// NumericTweaker
+/// TODO: I am getting a lot of timeouts when modifying for loop counters. Maybe avoid mutating those or
+/// detect them and mutate to smaller ranges?
 pub struct NumericTweaker;
 
 struct NumericTweakerVisitor {
     rng: rand::rngs::ThreadRng,
     idx_to_mutate: usize,
     crt_idx: usize,
+    in_for_stmt: Option<&'static str>, // know if I'm visitng the literals of the init/test/update of a for statement
 }
 
 impl NumericTweakerVisitor {
@@ -29,6 +32,7 @@ impl NumericTweakerVisitor {
             rng,
             idx_to_mutate,
             crt_idx: 0,
+            in_for_stmt: None,
         }
     }
 
@@ -88,9 +92,28 @@ impl Visit for CountNumericLiterals {
 }
 
 impl VisitMut for NumericTweakerVisitor {
+    fn visit_mut_for_stmt(&mut self, node: &mut ForStmt) {
+        let prev_in_for = self.in_for_stmt;
+        if let Some(init) = &mut node.init {
+            self.in_for_stmt = Some("init");
+            init.visit_mut_with(self);
+        }
+        if let Some(test) = &mut node.test {
+            self.in_for_stmt = Some("test");
+            test.visit_mut_with(self);
+        }
+        if let Some(update) = &mut node.update {
+            self.in_for_stmt = Some("update");
+            update.visit_mut_with(self);
+        }
+        self.in_for_stmt = None;
+        node.body.visit_mut_with(self);
+        self.in_for_stmt = prev_in_for;
+    }
     fn visit_mut_lit(&mut self, node: &mut Lit) {
         node.visit_mut_children_with(self);
 
+        // println!("{:?}", self.in_for_stmt);
         if self.crt_idx != self.idx_to_mutate {
             self.crt_idx += 1;
             return;
@@ -102,22 +125,34 @@ impl VisitMut for NumericTweakerVisitor {
             let mut new_value = original;
 
             // Weighted choice of mutation mode
-            let choice = random_weighted_choice(&[
-                ("small_delta", 15),
-                ("add_one", 15),
-                ("sub_one", 15),
-                ("flip_sign", 10),
-                ("to_nan", 6),
-                ("to_infinity", 4),
-                ("to_neg_infinity", 4),
-                ("to_neg_zero", 6),
-                ("to_extreme_large", 4),
-                ("to_extreme_small", 4),
-                ("pow2", 4),
-                ("random_fraction", 5),
-                ("truncate_int", 4),
-                ("scale_mult", 4),
-            ]);
+            let choice = match self.in_for_stmt {
+                None | Some("init") | Some("update") => random_weighted_choice(&[
+                    ("small_delta", 15),
+                    ("add_one", 15),
+                    ("sub_one", 15),
+                    ("flip_sign", 10),
+                    ("to_nan", 6),
+                    ("to_infinity", 4),
+                    ("to_neg_infinity", 4),
+                    ("to_neg_zero", 6),
+                    ("to_extreme_large", 4),
+                    ("to_extreme_small", 4),
+                    ("pow2", 4),
+                    ("random_fraction", 5),
+                    ("truncate_int", 4),
+                    ("scale_mult", 4),
+                ]),
+                Some("test") => random_weighted_choice(&[
+                    ("small_delta", 15),
+                    ("add_one", 20),
+                    ("sub_one", 20),
+                    ("turn_to_10k", 20), // to trigger JIT optimizations
+                    ("flip_sign", 10),
+                    ("to_neg_zero", 10),
+                    ("to_nan", 5),
+                ]),
+                _ => unreachable!()
+            };
 
             match choice {
                 "small_delta" => {
@@ -128,6 +163,9 @@ impl VisitMut for NumericTweakerVisitor {
                 }
                 "sub_one" => {
                     new_value -= 1.0;
+                }
+                "turn_to_10k" => {
+                    new_value = 10_000.0;
                 }
                 "flip_sign" => {
                     new_value = -new_value;
@@ -191,6 +229,7 @@ impl VisitMut for NumericTweakerVisitor {
 
 impl AstMutator for NumericTweaker {
     fn mutate(&self, mut ast: Script) -> Result<Script> {
+        // println!("{:#?}", ast);
         let mut counter = CountNumericLiterals { count: 0 };
         ast.visit_with(&mut counter);
         if counter.count == 0 {
