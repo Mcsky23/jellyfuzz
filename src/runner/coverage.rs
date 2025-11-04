@@ -43,4 +43,5 @@ unsafe extern "C" {
     pub fn cov_clear_bitmap(ctx: *mut CovContext);
     pub fn cov_evaluate(ctx: *mut CovContext, new_edges: *mut EdgeSet) -> c_int;
     pub fn cov_clear_edge_data(ctx: *mut CovContext, index: u32);
+    pub fn cov_get_edge_counts(ctx: *mut CovContext) -> c_int;
 }

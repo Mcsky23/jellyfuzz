@@ -18,6 +18,7 @@ tokio = { version = "1.48.0", features = ["full"] }
 weighted_rand = "0.4.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+lazy_static = "1.5.0"
 
 [build-dependencies]
 cc = "1.2.43"

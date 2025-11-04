@@ -167,6 +167,22 @@ impl ExpressionDupVisitor {
     }
 
     fn pick_replacement(&mut self) -> Option<Expr> {
+        // 50% change to pick ident, 50% to pick any expr
+        if self.rng.random_bool(0.5) {
+            let candidates: Vec<Expr> = self
+                .scopes
+                .iter()
+                .rev()
+                .flat_map(|scope| {
+                    scope.idents.iter().map(|ident| Expr::Ident(ident.clone()))
+                })
+                .collect();
+            if candidates.is_empty() {
+                return None;
+            }
+            let expr = candidates.choose(&mut self.rng).cloned();
+            return expr;
+        }
         for scope in self.scopes.iter().rev() {
             if let Some(expr) = scope.exprs.choose(&mut self.rng).cloned() {
                 return Some(expr);
@@ -267,6 +283,8 @@ impl VisitMut for ExpressionDupVisitor {
         }
 
         if current == self.idx_to_replace {
+            // println!("Duplicating expression at index {}", current);
+            // println!("{:#?}", self.scopes);
             if let Some(mut replacement) = self.pick_replacement() {
                 let candidates = self.collect_available_idents();
                 swap_idents_in_expr(&mut replacement, &mut self.rng, &candidates);
@@ -429,6 +447,7 @@ impl AstMutator for ExpressionDup {
         if expr_count < 2 {
             return Ok(ast);
         }
+        // println!("{:#?}", collector.exprs);
 
         let mut rng = rand::rng();
         let idx_to_replace = rng.random_range(0..expr_count);

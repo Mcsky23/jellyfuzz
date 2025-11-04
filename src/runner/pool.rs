@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::yield_now;
@@ -12,6 +12,10 @@ static NEXT_COV_CONTEXT_ID: AtomicI32 = AtomicI32::new(0);
 
 use crate::profiles::profile::JsEngineProfile;
 use crate::runner::{coverage::*, process::FuzzProcess};
+
+lazy_static::lazy_static! {
+    pub static ref TOTAL_EDGE_COUNT: AtomicU32 = AtomicU32::new(0);
+}
 
 /// A job to be executed by a FuzzWorker
 pub struct Job {
@@ -75,7 +79,7 @@ pub struct FuzzPool {
 /// of the intersection more than `max_resets` times, we blacklist it.
 pub struct EdgeTracker {
     seen_edges: HashSet<u32>,
-    blacklist: HashSet<u32>,
+    blacklist: HashMap<u32, usize>, // edge -> reset count
     max_resets: usize,
 }
 
@@ -103,6 +107,8 @@ impl FuzzWorker {
 
         let (job_queue_tx, job_queue_rx) = mpsc::channel(profile.fuzz_worker_job_queue_size());
 
+        Self::set_edge_count(&mut cov_ctx);
+
         Ok(Self {
             process: target,
             cov_ctx,
@@ -110,6 +116,13 @@ impl FuzzWorker {
             job_tx: job_queue_tx,
             edge_tracker,
         })
+    }
+
+    pub fn set_edge_count(cov_ctx: &mut CovContext) {
+        let total_edge_count = cov_ctx.num_edges;
+        if TOTAL_EDGE_COUNT.load(Ordering::SeqCst) == 0 {
+            TOTAL_EDGE_COUNT.store(total_edge_count, Ordering::SeqCst);
+        }
     }
 
     pub fn get_job_sender(&self) -> mpsc::Sender<Job> {
@@ -242,12 +255,29 @@ impl FuzzWorker {
         let second_slice =
             unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
         let mut first_set: HashSet<u32> = HashSet::with_capacity(candidate_edges.len());
+        let mut second_set: HashSet<u32> = HashSet::with_capacity(second_slice.len());
+        
         first_set.extend(candidate_edges.iter());
+        second_set.extend(second_slice.iter());
         let mut stable_edges = Vec::new();
+
+        // aux tracking buffer(so we don't have to lock multiple times)
+        let mut aux_tracker = HashMap::new();
+
+        for &edge in candidate_edges {
+            if !second_set.contains(&edge) {
+                let reset_count = aux_tracker.entry(edge).or_insert(0);
+                *reset_count += 1;
+                // unsafe { cov_clear_edge_data(&mut self.cov_ctx, edge) };
+            }
+        }
+
         for &edge in second_slice {
             if first_set.contains(&edge) {
                 stable_edges.push(edge);
             } else {
+                let reset_count = aux_tracker.entry(edge).or_insert(0);
+                *reset_count += 1;
                 unsafe { cov_clear_edge_data(&mut self.cov_ctx, edge) };
             }
         }
@@ -260,9 +290,17 @@ impl FuzzWorker {
         // Update edge tracker
         let stable_edges = {
             let mut tracker = self.edge_tracker.blocking_write();
+            for (edge, count) in aux_tracker.iter() {
+                let entry = tracker.blacklist.entry(*edge).or_insert(0);
+                *entry += count;
+                if *entry >= tracker.max_resets {
+                    // eprintln!("Blacklisting edge {}", edge);
+                }
+            }
             let mut stable_edges_curated = vec![];
             for &edge in &stable_edges {
-                if tracker.blacklist.contains(&edge) || tracker.seen_edges.contains(&edge) {
+                if tracker.blacklist.get(&edge).unwrap_or(&0) >= &tracker.max_resets || 
+                    tracker.seen_edges.contains(&edge) {
                     continue;
                 }
                 stable_edges_curated.push(edge);
@@ -293,7 +331,7 @@ impl FuzzPool {
         let mut job_senders = Vec::new();
         let edge_tracker = Arc::new(RwLock::new(EdgeTracker {
             seen_edges: HashSet::new(),
-            blacklist: HashSet::new(),
+            blacklist: HashMap::new(),
             max_resets: 1000,
         }));
         for _ in 0..num_workers {
@@ -311,11 +349,7 @@ impl FuzzPool {
             job_senders,
             next_worker: 0,
             job_capacity: Arc::new(Semaphore::new(queue_capacity)),
-            edge_tracker: Arc::new(RwLock::new(EdgeTracker {
-                seen_edges: HashSet::new(),
-                blacklist: HashSet::new(),
-                max_resets: 3,
-            })),
+            edge_tracker,
         })
     }
 
@@ -367,9 +401,15 @@ impl FuzzPool {
             .ok_or_else(|| anyhow::anyhow!("Failed to receive job result"))?
     }
 
-    /// Start fuzzing
-    pub async fn start_fuzzing(&mut self) {
-        unimplemented!();
+    pub async fn print_pool_stats(&self) {
+        let tracker = self.edge_tracker.read().await;
+        println!(
+            "Edge tracker: seen edges: {}, blacklisted edges: {}, total edges: {}, coverage: {:.2}%",
+            tracker.seen_edges.len(),
+            tracker.blacklist.iter().filter(|&(_, &count)| count >= tracker.max_resets).count(),
+            TOTAL_EDGE_COUNT.load(Ordering::SeqCst),
+            (tracker.seen_edges.len() as f64 / TOTAL_EDGE_COUNT.load(Ordering::SeqCst) as f64) * 100.0
+        );
     }
 }
 

@@ -508,11 +508,9 @@ async fn single_test(script_path: &str, profile: &str) {
 
     let mut handles = vec![];
     let start = Instant::now();
-    for i in 0..20000 {
-        if i % 1000 == 0 {
-            println!("Single test iteration {}", i);
-        }
-
+    const TOTAL_ITERATIONS: usize = 10000;
+    let mut total_iters = 0;
+    for i in 0..TOTAL_ITERATIONS {
         for mutator in &mutators {
             let mutated_ast = mutator
                 .mutate(mutated_ast.clone())
@@ -524,6 +522,7 @@ async fn single_test(script_path: &str, profile: &str) {
                 .schedule_job(mutated_code.clone())
                 .await
                 .expect("failed to schedule job");
+            total_iters += 1;
 
             let corpus_manager = Arc::clone(&corpus_manager);
             let mutator = mutator.clone();
@@ -561,13 +560,20 @@ async fn single_test(script_path: &str, profile: &str) {
             for handle in handles.drain(..) {
                 handle.await.expect("single test task failed");
             }
+            pool.print_pool_stats().await;
+            println!("executed {} iterations", total_iters);
+            let elapsed = start.elapsed();
+            println!("Execs/sec: {:.2}", (total_iters) as f64 / elapsed.as_secs_f64());
         }
     }
-    let elapsed = start.elapsed();
-    println!("Single test completed in {:?}", elapsed);
     for handle in handles {
         handle.await.expect("single test task failed");
     }
+    let elapsed = start.elapsed();
+    println!("Single test completed in {:?}", elapsed);
+    println!("Total iterations: {}", total_iters);
+    println!("Execs/sec: {:.2}", (total_iters) as f64 / elapsed.as_secs_f64());
+
     for mutator in &mutators {
         let stats = mutator.stats_snapshot();
         let success_rate = if stats.uses == 0 {
