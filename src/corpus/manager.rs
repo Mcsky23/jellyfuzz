@@ -117,7 +117,7 @@ impl CorpusManager {
             entry.last_reward = reward;
             entry.total_reward += reward;
             entry.exec_time_ms = exec_time_ms;
-            self.persist().await?;
+            // self.persist().await?; // TODO: optimize by only calling this function after a number of updates
         }
         Ok(())
     }
@@ -179,6 +179,20 @@ impl CorpusManager {
         self.entries.push(entry.clone());
         self.persist().await?; // TODO: optimize by only calling this function after a number of additions
         Ok(Some(entry))
+    }
+
+    pub async fn remove_entry(&mut self, id: u64) -> Result<()> {
+        if let Some(pos) = self.entries.iter().position(|entry| entry.id == id) {
+            let entry = self.entries.remove(pos);
+            let absolute_path = self.root.join(&entry.path);
+            if fs::metadata(&absolute_path).await.is_ok() {
+                fs::remove_file(&absolute_path)
+                    .await
+                    .with_context(|| format!("failed to remove corpus entry {:?}", absolute_path))?;
+            }
+            self.persist().await?;
+        }
+        Ok(())
     }
 
     async fn persist(&self) -> Result<()> {

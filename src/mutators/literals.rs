@@ -116,7 +116,8 @@ impl VisitMut for NumericTweakerVisitor {
         // println!("{:?}", self.in_for_stmt);
 
         if let Lit::Null(_) = node {
-            println!("Found undefined literal");
+            // TODO: see what's up with this
+            // println!("Found undefined literal");
         }
         if let Lit::Num(num_lit) = node {
             if self.crt_idx != self.idx_to_mutate {

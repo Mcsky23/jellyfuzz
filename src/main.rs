@@ -19,7 +19,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::corpus::CorpusManager;
 use crate::mutators::minifier::Minifier;
-use crate::mutators::{ManagedMutator, get_ast_mutators, get_mutator_by_name};
+use crate::mutators::{ManagedMutator, get_ast_mutators, get_mutator_by_name, get_weighted_mutator_choice};
 use crate::parsing::parser::{generate_js, parse_js};
 use crate::profiles::profile::JsEngineProfile;
 use crate::runner::pool::{FuzzPool, JobResult};
@@ -29,7 +29,7 @@ use crate::runner::pool::{FuzzPool, JobResult};
 struct Args {
     #[arg(short, long, help = "Path to output progress output directory")]
     output_dir: PathBuf,
-
+    
     // overwrite existing corpus files and start from scratch
     #[arg(short, long, action=clap::ArgAction::SetTrue, help = "Overwrite existing corpus directory if it exists and restart progress")]
     overwrite: Option<bool>,
@@ -41,7 +41,7 @@ struct Args {
         help = "Path to initial corpus directory to ingest when starting from scratch"
     )]
     initial_corpus: Option<PathBuf>,
-
+    
     // resume from existing corpus
     #[arg(short, long, action=clap::ArgAction::SetTrue, help = "Resume progress from existing corpus directory")]
     resume: Option<bool>,
@@ -71,7 +71,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let output_dir = args.output_dir.clone();
-
+    
     if let Some(test_path) = args.single_test.as_deref() {
         single_test(test_path, &args.profile).await;
         return Ok(());
@@ -81,25 +81,25 @@ async fn main() -> Result<()> {
         mutator_test("test.js", mutator, &args.profile).await;
         return Ok(());
     }
-
+    
     if args.overwrite.unwrap_or(false) {
         handle_overwrite(&output_dir)?;
     } else if !output_dir.exists() {
         fs::create_dir_all(&output_dir)
-            .with_context(|| format!("failed to create output directory {:?}", output_dir))?;
+        .with_context(|| format!("failed to create output directory {:?}", output_dir))?;
     }
-
+    
     let corpus_manager = Arc::new(Mutex::new(CorpusManager::load(output_dir.clone()).await?));
     let profile = profiles::get_profile(&args.profile)
-        .unwrap_or_else(|| panic!("unknown profile {}", args.profile));
+    .unwrap_or_else(|| panic!("unknown profile {}", args.profile));
     let pool_size = args.workers;
     let mut pool = FuzzPool::new(pool_size, &profile)?;
-
+    
     if args.overwrite.unwrap_or(false) {
         let initial_corpus = args
-            .initial_corpus
-            .clone()
-            .expect("initial corpus directory is required when overwrite is set");
+        .initial_corpus
+        .clone()
+        .expect("initial corpus directory is required when overwrite is set");
         ingest_initial_corpus(&mut pool, Arc::clone(&corpus_manager), initial_corpus).await?;
     } else if args.resume.unwrap_or(false) {
         let len = {
@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         };
         println!("Resuming with {} corpus entries loaded from disk", len);
     }
-
+    
     let is_empty = {
         let mgr = corpus_manager.lock().await;
         mgr.is_empty()
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
         println!("Corpus is empty; nothing to fuzz.");
         return Ok(());
     }
-
+    
     let mutators = get_ast_mutators();
     run_fuzz_loop(&mut pool, Arc::clone(&corpus_manager), &mutators).await
 }
@@ -130,20 +130,20 @@ fn handle_overwrite(output_dir: &PathBuf) -> Result<()> {
         );
         let mut input = String::new();
         std::io::stdin()
-            .read_line(&mut input)
-            .context("failed to read overwrite confirmation")?;
+        .read_line(&mut input)
+        .context("failed to read overwrite confirmation")?;
         if input.trim().eq_ignore_ascii_case("y") {
             fs::remove_dir_all(output_dir)
-                .with_context(|| format!("failed to remove {:?}", output_dir))?;
+            .with_context(|| format!("failed to remove {:?}", output_dir))?;
             fs::create_dir_all(output_dir)
-                .with_context(|| format!("failed to recreate {:?}", output_dir))?;
+            .with_context(|| format!("failed to recreate {:?}", output_dir))?;
             println!("Existing corpus removed.");
         } else {
             bail!("aborted by user");
         }
     } else {
         fs::create_dir_all(output_dir)
-            .with_context(|| format!("failed to create {:?}", output_dir))?;
+        .with_context(|| format!("failed to create {:?}", output_dir))?;
     }
     Ok(())
 }
@@ -159,26 +159,26 @@ async fn ingest_initial_corpus(
     let skipped = Arc::new(AtomicUsize::new(0));
     let minifier = Minifier;
     let mut dir = async_fs::read_dir(&corpus_dir)
-        .await
-        .with_context(|| format!("failed to read corpus directory {:?}", corpus_dir))?;
+    .await
+    .with_context(|| format!("failed to read corpus directory {:?}", corpus_dir))?;
     let mut handles = Vec::new();
-
+    
     while let Some(entry) = dir
-        .next_entry()
-        .await
-        .with_context(|| "failed to iterate corpus directory".to_string())?
+    .next_entry()
+    .await
+    .with_context(|| "failed to iterate corpus directory".to_string())?
     {
         let path = entry.path();
         let file_type = entry
-            .file_type()
-            .await
-            .with_context(|| format!("failed to determine file type for {:?}", path))?;
+        .file_type()
+        .await
+        .with_context(|| format!("failed to determine file type for {:?}", path))?;
         if !file_type.is_file() {
             continue;
         }
-
+        
         let processed_now = processed.fetch_add(1, Ordering::Relaxed) + 1;
-
+        
         let source = match async_fs::read(&path).await {
             Ok(data) => data,
             Err(err) => {
@@ -187,7 +187,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let source_str = match String::from_utf8(source) {
             Ok(src) => src,
             Err(_) => {
@@ -195,7 +195,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let script = match parse_js(source_str) {
             Ok(script) => script,
             Err(err) => {
@@ -204,7 +204,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let minified = match minifier.mutate(script) {
             Ok(script) => script,
             Err(err) => {
@@ -213,7 +213,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let new_code = match generate_js(minified) {
             Ok(code) => code,
             Err(err) => {
@@ -222,7 +222,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let exec_start = Instant::now();
         let result_rx = match pool.schedule_job(new_code.clone()).await {
             Ok(rx) => rx,
@@ -232,7 +232,7 @@ async fn ingest_initial_corpus(
                 continue;
             }
         };
-
+        
         let corpus_manager_clone = Arc::clone(&corpus_manager);
         let accepted_clone = Arc::clone(&accepted);
         let skipped_clone = Arc::clone(&skipped);
@@ -252,24 +252,24 @@ async fn ingest_initial_corpus(
                     return;
                 }
             };
-
+            
             let exec_time = exec_start.elapsed().as_millis() as u64;
             if job_result.status_code != 0 || job_result.is_timeout {
                 skipped_clone.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-
+            
             let reward = compute_reward(&job_result);
             let mut manager = corpus_manager_clone.lock().await;
             match manager
-                .add_entry(
-                    &new_code,
-                    job_result.edge_hits.clone(),
-                    reward,
-                    exec_time,
-                    job_result.is_timeout,
-                )
-                .await
+            .add_entry(
+                &new_code,
+                job_result.edge_hits.clone(),
+                reward,
+                exec_time,
+                job_result.is_timeout,
+            )
+            .await
             {
                 Ok(Some(_)) => {
                     accepted_clone.fetch_add(1, Ordering::Relaxed);
@@ -294,13 +294,13 @@ async fn ingest_initial_corpus(
             println!("Ingested {} files...", processed_now);
         }
     }
-
+    
     for handle in handles {
         if let Err(err) = handle.await {
             eprintln!("Ingestion task failed: {:?}", err);
         }
     }
-
+    
     let processed = processed.load(Ordering::Relaxed);
     let accepted = accepted.load(Ordering::Relaxed);
     let skipped = skipped.load(Ordering::Relaxed);
@@ -318,8 +318,17 @@ async fn run_fuzz_loop(
     mutators: &[Arc<ManagedMutator>],
 ) -> Result<()> {
     let mut iteration: u64 = 0;
+    let mut handles = vec![];
+    let start = Instant::now();
     loop {
         iteration += 1;
+        
+        // if iteration >= 50_000 {
+        //     println!("Reached maximum iterations; exiting fuzz loop.");
+        //     break;
+        // }
+        
+        let corpus_manager = corpus_manager.clone();
         let selection = {
             let mut mgr = corpus_manager.lock().await;
             mgr.pick_random()
@@ -331,7 +340,7 @@ async fn run_fuzz_loop(
                 continue;
             }
         };
-
+        
         let seed_bytes = match async_fs::read(&selection.path).await {
             Ok(data) => data,
             Err(err) => {
@@ -350,19 +359,12 @@ async fn run_fuzz_loop(
             Ok(ast) => ast,
             Err(err) => {
                 eprintln!("Failed to parse seed {:?}: {:?}", selection.path, err);
+                corpus_manager.lock().await.remove_entry(selection.id).await.unwrap_or(());
                 continue;
             }
         };
-
-        let mut rng = rand::rng();
-        let mutator = match mutators.choose(&mut rng) {
-            Some(m) => Arc::clone(m),
-            None => {
-                eprintln!("No mutators registered; aborting fuzz loop.");
-                break;
-            }
-        };
-
+        
+        let mutator = get_weighted_mutator_choice(mutators);
         let mutated_ast = match mutator.mutate(seed_script) {
             Ok(ast) => ast,
             Err(err) => {
@@ -375,7 +377,7 @@ async fn run_fuzz_loop(
                 continue;
             }
         };
-
+        
         let mutated_code = match generate_js(mutated_ast) {
             Ok(code) => code,
             Err(err) => {
@@ -383,8 +385,7 @@ async fn run_fuzz_loop(
                 continue;
             }
         };
-
-        let exec_start = Instant::now();
+        
         let mut result_rx = match pool.schedule_job(mutated_code.clone()).await {
             Ok(rx) => rx,
             Err(err) => {
@@ -392,69 +393,123 @@ async fn run_fuzz_loop(
                 continue;
             }
         };
-        let job_result = match result_rx.recv().await {
-            Some(Ok(res)) => res,
-            Some(Err(err)) => {
-                eprintln!("Worker execution error: {:?}", err);
-                continue;
-            }
-            None => {
-                eprintln!("Worker dropped execution result");
-                continue;
-            }
-        };
-        let exec_time_ms = exec_start.elapsed().as_millis() as u64;
-        let reward = compute_reward(&job_result);
-
-        mutator.record_reward(reward);
-        {
-            let mut mgr = corpus_manager.lock().await;
-            mgr.record_result(selection.id, reward, exec_time_ms)
-                .await?;
-        }
-
-        if job_result.is_crash {
-            println!(
-                "Crash detected (exit {}, signal {}); reward {}",
-                job_result.status_code, job_result.signal, reward
-            );
-            let root_path = {
-                let mgr = corpus_manager.lock().await;
-                mgr.root().to_path_buf()
+        let handle = tokio::task::spawn(async move {
+            let job_result = match result_rx.recv().await {
+                Some(Ok(res)) => res,
+                Some(Err(err)) => {
+                    eprintln!("Worker execution error: {:?}", err);
+                    return;
+                }
+                None => {
+                    eprintln!("Worker dropped execution result");
+                    return;
+                }
             };
-            let crash_path = output_crash_path(root_path.as_path(), iteration);
-            persist_crash(crash_path.as_path(), &mutated_code).await?;
-        }
-        println!(
-            "[iter {}] exec_time: {} ms, reward: {}, new_coverage: {}, exit_code: {}, signal: {}, path: {:?}",
-            iteration,
-            exec_time_ms,
-            reward,
-            job_result.new_coverage,
-            job_result.status_code,
-            job_result.signal,
-            selection.path
-        );
-        if job_result.new_coverage {
-            let add_result = {
+            let reward = compute_reward(&job_result);
+            
+            mutator.record_reward(reward);
+            if job_result.is_timeout || job_result.status_code != 0 {
+                mutator.record_invalid();
+            }
+            if job_result.is_timeout {
+                mutator.record_timeout();
+            }
+            {
                 let mut mgr = corpus_manager.lock().await;
-                mgr.add_entry(
-                    &mutated_code,
-                    job_result.edge_hits.clone(),
-                    reward.max(0.0),
-                    exec_time_ms,
-                    job_result.is_timeout,
-                )
+                mgr.record_result(selection.id, reward, 0)
                 .await
-            };
-            if let Ok(Some(entry)) = add_result {
+                .unwrap_or(());
+            }
+            
+            if job_result.is_crash {
                 println!(
-                    "[iter {}] new corpus entry {} ({} bytes)",
-                    iteration, entry.id, entry.size_bytes
+                    "Crash detected (exit {}, signal {}); reward {}",
+                    job_result.status_code, job_result.signal, reward
+                );
+                let root_path = {
+                    let mgr = corpus_manager.lock().await;
+                    mgr.root().to_path_buf()
+                };
+                let crash_path = output_crash_path(root_path.as_path(), iteration);
+                persist_crash(crash_path.as_path(), &mutated_code).await.unwrap_or_else(|err| {
+                    eprintln!("Failed to persist crash repro: {:?}", err);
+                });
+                return;
+            }
+            // println!(
+            //     "[iter {}] exec_time: {} ms, reward: {}, new_coverage: {}, exit_code: {}, signal: {}, path: {:?}",
+            //     iteration,
+            //     exec_time_ms,
+            //     reward,
+            //     job_result.new_coverage,
+            //     job_result.status_code,
+            //     job_result.signal,
+            //     selection.path
+            // );
+            if job_result.new_coverage {
+                let add_result = {
+                    let mut mgr = corpus_manager.lock().await;
+                    mgr.add_entry(
+                        &mutated_code,
+                        job_result.edge_hits.clone(),
+                        reward.max(0.0),
+                        0,
+                        job_result.is_timeout,
+                    )
+                    .await
+                };
+                if let Ok(Some(entry)) = add_result {
+                    // println!(
+                    //     "[iter {}] new corpus entry {} ({} bytes)",
+                    //     iteration, entry.id, entry.size_bytes
+                    // );
+                }
+            }
+        });
+        handles.push(handle);
+        if handles.len() >= 10000 {
+            for handle in handles.drain(..) {
+                handle.await.expect("fuzz loop task failed");
+            }
+            pool.print_pool_stats().await;
+            println!("executed {} iterations", iteration);
+            let elapsed = start.elapsed();
+            println!(
+                "Execs/sec: {:.2}",
+                (iteration) as f64 / elapsed.as_secs_f64()
+            );
+            for mutator in mutators {
+                let stats = mutator.stats_snapshot();
+                let success_rate = if stats.uses == 0 {
+                    0.0
+                } else {
+                    (stats.uses - stats.invalid_count) as f64 / stats.uses as f64 * 100.0
+                };
+                println!(
+                    "[mut] {}: success rate: {:.2}%, reward: {:.2}, mean: {:.4}, uses: {}, timeouts: {}, invalids: {}",
+                    mutator.name(),
+                    success_rate,
+                    stats.total_reward,
+                    stats.mean_reward,
+                    stats.uses,
+                    stats.timeout_count,
+                    stats.invalid_count
                 );
             }
         }
     }
+    
+    for handle in handles {
+        handle.await.expect("fuzz loop task failed");
+    }
+    let elapsed = start.elapsed();
+    println!("Fuzz loop completed in {:?}", elapsed);
+    println!("Total iterations: {}", iteration);
+    println!(
+        "Execs/sec: {:.2}",
+        (iteration) as f64 / elapsed.as_secs_f64()
+    );
+    
     Ok(())
 }
 
@@ -473,12 +528,12 @@ fn compute_reward(result: &JobResult) -> f64 {
 async fn persist_crash(path: &std::path::Path, contents: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         async_fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("failed to create crash directory {:?}", parent))?;
+        .await
+        .with_context(|| format!("failed to create crash directory {:?}", parent))?;
     }
     async_fs::write(path, contents)
-        .await
-        .with_context(|| format!("failed to save crash repro {:?}", path))?;
+    .await
+    .with_context(|| format!("failed to save crash repro {:?}", path))?;
     Ok(())
 }
 
@@ -495,98 +550,125 @@ async fn single_test(script_path: &str, profile: &str) {
     let minifier = Minifier;
     let mutated_ast = minifier.mutate(ast).expect("minification failed");
     // let mutated_code = generate_js(mutated_ast).expect("code generation failed");
-
+    
     let mut pool = FuzzPool::new(14, &profiles::get_profile(profile).unwrap())
-        .expect("failed to create fuzz pool");
-
+    .expect("failed to create fuzz pool");
+    
     let mutators = get_ast_mutators();
     let root_path = std::path::PathBuf::from("single_test_output");
-    let corpus_manager = CorpusManager::load(root_path.clone())
+    
+    let (task_tx, mut task_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    
+    let runner = tokio::task::spawn(async move {
+        let mut handles = vec![];
+        let corpus_manager = CorpusManager::load(root_path.clone())
         .await
         .expect("failed to load corpus manager");
-    let corpus_manager = Arc::new(Mutex::new(corpus_manager));
-
-    let mut handles = vec![];
+        let corpus_manager = Arc::new(Mutex::new(corpus_manager));
+        
+        let mut total_iters = 0;
+        let start = Instant::now();
+        while let Some(js_code) = task_rx.recv().await {
+            total_iters += 1;
+            let mut result_rx = pool
+            .schedule_job(js_code.clone())
+            .await
+            .expect("failed to schedule job");
+            
+            let corpus_manager = Arc::clone(&corpus_manager);
+            let handle = tokio::spawn(async move {
+                let job_result = result_rx
+                .recv()
+                .await
+                .expect("failed to receive job result")
+                .expect("job execution failed");
+                if job_result.new_coverage && job_result.status_code == 0 {
+                    corpus_manager
+                    .lock()
+                    .await
+                    .add_entry(
+                        &js_code,
+                        job_result.edge_hits.clone(),
+                        1.0,
+                        0,
+                        job_result.is_timeout,
+                    )
+                    .await
+                    .expect("failed to add new corpus entry");
+                }
+                if job_result.is_crash {
+                    println!("Code: {:?}", js_code);
+                    panic!("How did we find a crash?");
+                }
+                // if job_result.is_timeout || job_result.status_code != 0 {
+                //     mutator.record_invalid();
+                // }
+            });
+            handles.push(handle);
+            
+            if handles.len() >= 10000 {
+                for handle in handles.drain(..) {
+                    handle.await.expect("single test task failed");
+                }
+                pool.print_pool_stats().await;
+                println!("executed {} iterations", total_iters);
+                let elapsed = start.elapsed();
+                println!(
+                    "Execs/sec: {:.2}",
+                    (total_iters) as f64 / elapsed.as_secs_f64()
+                );
+            }
+        }
+        for handle in handles.drain(..) {
+            handle.await.expect("single test task failed");
+        }
+        let elapsed = start.elapsed();
+        println!("Single test completed in {:?}", elapsed);
+        println!("Total iterations: {}", total_iters);
+        println!(
+            "Execs/sec: {:.2}",
+            (total_iters) as f64 / elapsed.as_secs_f64()
+        );
+    });
+    
+    
     let start = Instant::now();
-    const TOTAL_ITERATIONS: usize = 10000;
-    let mut total_iters = 0;
+    const TOTAL_ITERATIONS: usize = 30000;
+    
     for i in 0..TOTAL_ITERATIONS {
         for mutator in &mutators {
             let mutated_ast = mutator
-                .mutate(mutated_ast.clone())
-                .expect("numeric mutation failed");
-            let mutated_ast = mutated_ast.clone();
+            .mutate(mutated_ast.clone())
+            .expect("numeric mutation failed");
             let mutated_code = generate_js(mutated_ast).expect("code generation failed");
-
-            let mut result_rx = pool
-                .schedule_job(mutated_code.clone())
-                .await
-                .expect("failed to schedule job");
-            total_iters += 1;
-
-            let corpus_manager = Arc::clone(&corpus_manager);
-            let mutator = mutator.clone();
-            let handle = tokio::spawn(async move {
-                let job_result = result_rx
-                    .recv()
-                    .await
-                    .expect("failed to receive job result")
-                    .expect("job execution failed");
-                if job_result.new_coverage && job_result.status_code == 0 {
-                    corpus_manager
-                        .lock()
-                        .await
-                        .add_entry(
-                            &mutated_code,
-                            job_result.edge_hits.clone(),
-                            1.0,
-                            0,
-                            job_result.is_timeout,
-                        )
-                        .await
-                        .expect("failed to add new corpus entry");
-                }
-                if job_result.is_crash {
-                    println!("Code: {:?}", mutated_code);
-                    panic!("How did we find a crash?");
-                }
-                if job_result.is_timeout || job_result.status_code != 0 {
-                    mutator.record_invalid();
-                }
-            });
-            handles.push(handle);
+            
+            task_tx
+            .send(mutated_code)
+            .expect("failed to send code to runner");
         }
-        if handles.len() >= 10000 {
-            for handle in handles.drain(..) {
-                handle.await.expect("single test task failed");
-            }
-            pool.print_pool_stats().await;
-            println!("executed {} iterations", total_iters);
-            let elapsed = start.elapsed();
-            println!("Execs/sec: {:.2}", (total_iters) as f64 / elapsed.as_secs_f64());
-        }
+        
     }
-    for handle in handles {
-        handle.await.expect("single test task failed");
-    }
-    let elapsed = start.elapsed();
-    println!("Single test completed in {:?}", elapsed);
-    println!("Total iterations: {}", total_iters);
-    println!("Execs/sec: {:.2}", (total_iters) as f64 / elapsed.as_secs_f64());
-
-    for mutator in &mutators {
-        let stats = mutator.stats_snapshot();
-        let success_rate = if stats.uses == 0 {
-            0.0
-        } else {
-            (stats.uses - stats.invalid_count) as f64 / stats.uses as f64 * 100.0
-        };
-        println!(
-            "Mutator {}: success rate: {:.2}%",
-            mutator.name(),
-            success_rate
-        );
-    }
+    println!(
+        "Submitted {} iterations in {:?}",
+        TOTAL_ITERATIONS,
+        start.elapsed()
+    );
+    drop(task_tx);
+    
+    runner.await.expect("runner task failed");
+    // for mutator in &mutators {
+    // let stats = mutator.stats_snapshot();
+    //     let success_rate = if stats.uses == 0 {
+    //         0.0
+    //     } else {
+    //         (stats.uses - stats.invalid_count) as f64 / stats.uses as f64 * 100.0
+    //     };
+    //     println!(
+    //         "Mutator {}: success rate: {:.2}%",
+    //         mutator.name(),
+    //         success_rate
+    //     );
+    // }
 }
 
 async fn mutator_test(script_path: &str, mutator: Arc<ManagedMutator>, profile: &str) {
@@ -595,18 +677,18 @@ async fn mutator_test(script_path: &str, mutator: Arc<ManagedMutator>, profile: 
     let mutated_ast = mutator.mutate(ast).expect("mutation failed");
     let mutated_code = generate_js(mutated_ast).expect("code generation failed");
     fs::write("test_out.js", &mutated_code).expect("failed to write mutated code");
-
+    
     let profile = profiles::get_profile(profile).expect("unknown profile");
     let mut pool = FuzzPool::new(1, &profile).expect("failed to create fuzz pool");
     let mut result_rx = pool
-        .schedule_job(mutated_code.clone())
-        .await
-        .expect("failed to schedule job");
+    .schedule_job(mutated_code.clone())
+    .await
+    .expect("failed to schedule job");
     let job_result = result_rx
-        .recv()
-        .await
-        .expect("failed to receive job result")
-        .expect("job execution failed");
+    .recv()
+    .await
+    .expect("failed to receive job result")
+    .expect("job execution failed");
     println!(
         "Mutator test result: exit {}, signal {}, timeout {}, new coverage {}",
         job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage

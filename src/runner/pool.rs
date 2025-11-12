@@ -72,6 +72,11 @@ pub struct FuzzPool {
     edge_tracker: Arc<RwLock<EdgeTracker>>,
 }
 
+
+// pub struct FuzzProcessCache {
+//     cache: 
+// }
+
 /// Helper struct to track seen edges during executions
 ///
 /// When we see new coverage on an execution, we re-run the same input and then intersect
@@ -237,6 +242,7 @@ impl FuzzWorker {
         }
 
         if exec_status.is_err() {
+            println!("Re-execution failed: {:?}", exec_status.err());
             self.process.restart()?;
             self.process.handshake()?;
             return Ok(Vec::new());

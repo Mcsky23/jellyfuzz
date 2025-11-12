@@ -6,6 +6,7 @@ use swc_ecma_visit::{Visit, VisitMut, VisitMutWith};
 use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
 use crate::mutators::AstMutator;
+use crate::mutators::scope::for_stmt_visitor;
 use crate::utils::rand_utils::{random_weighted_choice, small_delta};
 
 // TODO: have a bias against swapping operator in for loops' init/test/update?
@@ -15,17 +16,22 @@ use crate::utils::rand_utils::{random_weighted_choice, small_delta};
 pub struct OperatorSwap;
 pub struct CountOperators {
     pub count: usize,
+    in_for_stmt: Option<&'static str>,
 }
 pub struct OperatorSwapVisitor {
     rng: rand::rngs::ThreadRng,
     idx_to_mutate: usize,
     current_idx: usize,
+    in_for_stmt: Option<&'static str>,
 }
 
 impl Visit for CountOperators {
+    for_stmt_visitor!();
     fn visit_bin_expr(&mut self, n: &BinExpr) {
-        self.count += 1;
-        n.visit_children_with(self);
+        if self.in_for_stmt.is_none() {
+            self.count += 1;
+            n.visit_children_with(self);
+        }
     }
 }
 
@@ -61,8 +67,15 @@ const OPS_GROUPS: &[&[BinaryOp]] = &[
 ];
 
 impl VisitMut for OperatorSwapVisitor {
+    for_stmt_visitor!(mut);
+
     fn visit_mut_bin_expr(&mut self, n: &mut BinExpr) {
         n.visit_mut_children_with(self);
+
+        if self.in_for_stmt.is_some() {
+            return;
+        }
+
         if self.current_idx == self.idx_to_mutate {
             for group in OPS_GROUPS {
                 if let Some(pos) = group.iter().position(|&op| op == n.op) {
@@ -105,7 +118,7 @@ impl VisitMut for OperatorSwapVisitor {
 
 impl AstMutator for OperatorSwap {
     fn mutate(&self, ast: Script) -> Result<Script> {
-        let mut counter = CountOperators { count: 0 };
+        let mut counter = CountOperators { count: 0, in_for_stmt: None };
         ast.visit_with(&mut counter);
         if counter.count == 0 {
             return Ok(ast);
@@ -116,6 +129,7 @@ impl AstMutator for OperatorSwap {
             rng,
             idx_to_mutate,
             current_idx: 0,
+            in_for_stmt: None,
         };
         let mut ast = ast;
         ast.visit_mut_with(&mut visitor);

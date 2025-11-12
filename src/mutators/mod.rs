@@ -1,11 +1,15 @@
+pub mod elements;
 pub mod expressions;
 pub mod literals;
 pub mod minifier;
 pub mod operators;
+pub mod scope;
 
 use std::sync::{Arc, Mutex};
 
 use swc_ecma_visit::swc_ecma_ast::Script;
+
+use crate::utils::rand_utils::random_weighted_choice;
 
 pub trait AstMutator: Send + Sync {
     fn mutate(&self, ast: Script) -> anyhow::Result<Script>;
@@ -18,6 +22,7 @@ pub struct MutatorStats {
     pub uses: u64,
     pub last_reward: f64,
     pub invalid_count: u64,
+    pub timeout_count: u64,
 }
 
 impl Default for MutatorStats {
@@ -28,6 +33,7 @@ impl Default for MutatorStats {
             uses: 0,
             last_reward: 0.0,
             invalid_count: 0,
+            timeout_count: 0,
         }
     }
 }
@@ -74,6 +80,11 @@ impl ManagedMutator {
         stats.invalid_count += 1;
     }
 
+    pub fn record_timeout(&self) {
+        let mut stats = self.stats.lock().expect("mutator stats poisoned");
+        stats.timeout_count += 1;
+    }
+
     #[allow(dead_code)]
     pub fn stats_snapshot(&self) -> MutatorStats {
         self.stats.lock().expect("mutator stats poisoned").clone()
@@ -99,12 +110,12 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
             Box::new(operators::OperatorSwap {}),
         )),
         Arc::new(ManagedMutator::new(
-            "ExpressionSwap",
-            Box::new(expressions::ExpressionSwap {}),
+            "ExpressionSwapDup",
+            Box::new(expressions::ExpressionSwapDup {}),
         )),
         Arc::new(ManagedMutator::new(
-            "ExpressionDup",
-            Box::new(expressions::ExpressionDup {}),
+            "ElementAccessor",
+            Box::new(elements::ElementAccessorMutator {}),
         )),
     ]
 }
@@ -117,4 +128,20 @@ pub fn get_mutator_by_name(name: &str) -> Option<Arc<ManagedMutator>> {
         }
     }
     None
+}
+
+pub fn get_weighted_mutator_choice(
+    mutators: &[Arc<ManagedMutator>],
+) -> Arc<ManagedMutator> {
+    let mut choices: Vec<(Arc<ManagedMutator>, f64)> = Vec::new();
+    for m in mutators {
+        let stats = m.stats_snapshot();
+        let weight = if stats.uses == 0 {
+            1.0
+        } else {
+            stats.mean_reward + 1.0 / (stats.invalid_count as f64 + 1.0)
+        };
+        choices.push((m.clone(), weight));
+    }
+    random_weighted_choice(&mut rand::rng(), &choices)
 }

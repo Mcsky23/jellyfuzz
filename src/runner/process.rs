@@ -168,11 +168,13 @@ impl FuzzProcess {
 
     pub fn execute(&mut self, script: &[u8]) -> io::Result<ExecutionStatus> {
         if self.crt_executions >= self.max_executions {
-            if let Err(e) = self.restart() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("failed to restart process: {}", e),
-                ));
+            while let Err(e) = self.restart() {
+                // return Err(io::Error::new(
+                //     io::ErrorKind::Other,
+                //     format!("failed to restart process: {}", e),
+                // ));
+                eprintln!("failed to restart process: {}, retrying...", e);
+                thread::sleep(Duration::from_millis(100));
             }
             self.handshake()?;
             self.crt_executions = 0;
