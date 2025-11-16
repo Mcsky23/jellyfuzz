@@ -489,11 +489,11 @@ impl FuzzPool {
         let (result_tx, result_rx) = mpsc::channel(1);
         let worker_count = self.job_senders.len();
         let permit = self
-        .job_capacity
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|_| anyhow::anyhow!("Fuzz pool capacity semaphore closed"))?;
+            .job_capacity
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("Fuzz pool capacity semaphore closed"))?;
         let mut job = Job::new(js_code, result_tx, permit);
         
         loop {

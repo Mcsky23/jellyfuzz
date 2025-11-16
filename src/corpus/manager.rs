@@ -177,7 +177,7 @@ impl CorpusManager {
             last_selected_ts: None,
         };
         self.entries.push(entry.clone());
-        self.persist().await?; // TODO: optimize by only calling this function after a number of additions
+        // self.persist().await?; // TODO: optimize by only calling this function after a number of additions
         Ok(Some(entry))
     }
 
@@ -190,7 +190,7 @@ impl CorpusManager {
                     .await
                     .with_context(|| format!("failed to remove corpus entry {:?}", absolute_path))?;
             }
-            self.persist().await?;
+            // self.persist().await?;
         }
         Ok(())
     }

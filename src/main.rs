@@ -418,19 +418,19 @@ async fn run_fuzz_loop(
                 let mut mgr = corpus_manager.lock().await;
                 // Update stats for the original corpus entry.
                 mgr.record_result(selection.id, reward, 0)
-                    .await
-                    .unwrap_or(());
+                .await
+                .unwrap_or(());
                 // Persist timeouts into corpus/timeouts for later triage.
                 if job_result.is_timeout {
                     let _ = mgr
-                        .add_entry(
-                            &mutated_code,
-                            Vec::new(),
-                            0.0,
-                            0,
-                            true,
-                        )
-                        .await;
+                    .add_entry(
+                        &mutated_code,
+                        Vec::new(),
+                        0.0,
+                        0,
+                        true,
+                    )
+                    .await;
                 }
             }
             
@@ -459,7 +459,7 @@ async fn run_fuzz_loop(
             //     job_result.signal,
             //     selection.path
             // );
-            if job_result.new_coverage {
+            if job_result.new_coverage && job_result.status_code == 0 && !job_result.is_timeout {
                 let add_result = {
                     let mut mgr = corpus_manager.lock().await;
                     mgr.add_entry(
@@ -709,4 +709,36 @@ async fn mutator_test(script_path: &str, mutator: Arc<ManagedMutator>, profile: 
         "Mutator test result: exit {}, signal {}, timeout {}, new coverage {}",
         job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage
     );
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_single_script_test() {
+        let script_path = "corpus/seed_698.js";
+        let profile = "v8";
+        let profile = profiles::get_profile(profile).expect("unknown profile");
+        let mut pool = FuzzPool::new(1, &profile).expect("failed to create fuzz pool");
+        let source = fs::read_to_string(script_path).expect("failed to read test script");
+        let ast = parse_js(source).expect("failed to parse test script");
+        let minifier = Minifier;
+        let mutated_ast = minifier.mutate(ast).expect("minification failed");
+        let mutated_code = generate_js(mutated_ast).expect("code generation failed");
+        let mut result_rx = pool
+            .schedule_job(mutated_code.clone())
+            .await
+            .expect("failed to schedule job");
+        let job_result = result_rx
+            .recv()
+            .await
+            .expect("failed to receive job result")
+            .expect("job execution failed");
+        println!(
+            "Single script test result: exit {}, signal {}, timeout {}, new coverage {}",
+            job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage
+        );
+    }
 }

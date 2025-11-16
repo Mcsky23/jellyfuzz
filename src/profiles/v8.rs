@@ -14,7 +14,7 @@ impl JsEngineProfile for V8Profile {
 
     /// The size of the mpsc job queue for each FuzzWorker
     fn fuzz_worker_job_queue_size(&self) -> usize {
-        10000
+        1000
     }
 
     /// timeout in milliseconds of each script execution
@@ -24,6 +24,6 @@ impl JsEngineProfile for V8Profile {
 
     /// number of scripts to execute before restarting the FuzzProcess
     fn get_jobs_per_process(&self) -> usize {
-        1000
+        400
     }
 }
