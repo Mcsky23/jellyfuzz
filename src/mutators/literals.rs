@@ -152,20 +152,23 @@ impl VisitMut for NumericTweakerVisitor {
                         ("scale_mult", 4),
                     ],
                 ),
-                Some("test") | Some("init") | Some("update") => random_weighted_choice(
+                // TODO: figure out good mutations for for-loop literals
+                Some("test") => random_weighted_choice(
                     &mut self.rng,
                     &[
-                        ("small_delta", 15),
-                        ("add_one", 15),
-                        ("sub_one", 15),
-                        ("turn_to_10k", 20), // to trigger JIT optimizations
-                        ("flip_sign", 10),
-                        ("to_neg_zero", 10),
-                        ("to_nan", 5),
-                        ("to_undefined", 5),
-                        ("to_null", 5),
+                        // ("small_delta", 15),
+                        // ("add_one", 15),
+                        // ("sub_one", 15),
+                        // ("turn_to_10k", 1), // to trigger JIT optimizations
+                        ("do_nothing", 99),
+                        // ("flip_sign", 10),
+                        // ("to_neg_zero", 10),
+                        // ("to_nan", 5),
+                        // ("to_undefined", 5),
+                        // ("to_null", 5),
                     ],
                 ),
+                Some("init") | Some("update") => "do_nothing",
                 _ => unreachable!(),
             };
 

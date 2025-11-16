@@ -19,7 +19,7 @@ impl JsEngineProfile for V8Profile {
 
     /// timeout in milliseconds of each script execution
     fn get_timeout(&self) -> u64 {
-        1000
+        500
     }
 
     /// number of scripts to execute before restarting the FuzzProcess

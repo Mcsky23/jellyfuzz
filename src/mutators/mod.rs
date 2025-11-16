@@ -139,7 +139,12 @@ pub fn get_weighted_mutator_choice(
         let weight = if stats.uses == 0 {
             1.0
         } else {
-            stats.mean_reward + 1.0 / (stats.invalid_count as f64 + 1.0)
+            // stats.mean_reward + 1.0 / (stats.invalid_count as f64 + 1.0)s
+            if stats.mean_reward > 0.0 {
+                stats.mean_reward
+            } else {
+                0.1
+            }
         };
         choices.push((m.clone(), weight));
     }

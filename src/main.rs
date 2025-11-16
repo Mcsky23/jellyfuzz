@@ -318,10 +318,12 @@ async fn run_fuzz_loop(
     mutators: &[Arc<ManagedMutator>],
 ) -> Result<()> {
     let mut iteration: u64 = 0;
+    let mut total_iterations: u64 = 0;
     let mut handles = vec![];
     let mut start = Instant::now();
     loop {
         iteration += 1;
+        total_iterations += 1;
         
         // if iteration >= 50_000 {
         //     println!("Reached maximum iterations; exiting fuzz loop.");
@@ -485,7 +487,7 @@ async fn run_fuzz_loop(
                 handle.await.expect("fuzz loop task failed");
             }
             pool.print_pool_stats().await;
-            println!("executed {} iterations", iteration);
+            println!("executed {} iterations", total_iterations);
             let elapsed = start.elapsed();
             println!(
                 "[{:?}] Execs/sec: {:.2}",
@@ -520,7 +522,7 @@ async fn run_fuzz_loop(
     }
     let elapsed = start.elapsed();
     println!("Fuzz loop completed in {:?}", elapsed);
-    println!("Total iterations: {}", iteration);
+    println!("Total iterations: {}", total_iterations);
     println!(
         "Execs/sec: {:.2}",
         (iteration) as f64 / elapsed.as_secs_f64()
@@ -718,7 +720,7 @@ mod tests {
     use super::*;
     #[tokio::test(flavor = "multi_thread")]
     async fn run_single_script_test() {
-        let script_path = "corpus/seed_698.js";
+        let script_path = "corpus/crashes/seed_3137.js";
         let profile = "v8";
         let profile = profiles::get_profile(profile).expect("unknown profile");
         let mut pool = FuzzPool::new(1, &profile).expect("failed to create fuzz pool");

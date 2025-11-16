@@ -117,7 +117,7 @@ impl FuzzWorkerInternal {
         let shm_id = format!("shm_id_{}_{}", std::process::id(), cov_ctx.id);
         
         let mut process = FuzzProcess::spawn(profile, &shm_id)?;
-        println!("Spawned FuzzProcess with PID {}; shm_id: {}", process.child.id(), shm_id);
+        // println!("Spawned FuzzProcess with PID {}; shm_id: {}", process.child.id(), shm_id);
         process.handshake()?;
         
         unsafe {
@@ -537,8 +537,11 @@ impl FuzzPool {
     }
 }
 
-impl<T: JsEngineProfile + Clone + Send + Sync + 'static> Drop for FuzzWorker<T> {
+impl Drop for FuzzWorkerInternal {
     fn drop(&mut self) {
-        let _ = self.internal.process.child.kill();
+        let _ = self.process.child.kill();
+        unsafe {
+            cov_shutdown(&mut self.cov_ctx);
+        }
     }
 }
