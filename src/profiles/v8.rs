@@ -1,5 +1,6 @@
 use crate::profiles::profile::JsEngineProfile;
 
+#[derive(Clone)]
 pub struct V8Profile;
 
 impl JsEngineProfile for V8Profile {
@@ -23,6 +24,6 @@ impl JsEngineProfile for V8Profile {
 
     /// number of scripts to execute before restarting the FuzzProcess
     fn get_jobs_per_process(&self) -> usize {
-        400
+        1000
     }
 }

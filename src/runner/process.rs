@@ -16,8 +16,8 @@ const REPRL_DWFD: RawFd = 103; // child writes fuzzer prints / logs
 #[derive(Debug)]
 pub struct FuzzProcess {
     pub child: Child,
-    crt_executions: usize,
-    max_executions: usize,
+    pub crt_executions: usize,
+    pub max_executions: usize,
     timeout: u64,
     path: String,
     args: Vec<String>,
@@ -61,7 +61,7 @@ impl FuzzProcess {
         )
     }
 
-    fn spawn_with_details(
+    pub(crate) fn spawn_with_details(
         path: String,
         args: Vec<String>,
         shm_id: String,
@@ -158,27 +158,29 @@ impl FuzzProcess {
 
     pub fn handshake(&mut self) -> io::Result<()> {
         let mut buf = [0u8; 4];
-        self.ctrl_rx.read_exact(&mut buf)?;
+        self.ctrl_rx.read_exact(&mut buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to read HELO from child: {}", e)))?;
         if &buf != b"HELO" {
             return Err(io::Error::new(io::ErrorKind::Other, "bad HELO from child"));
         }
-        self.ctrl_tx.write_all(b"HELO")?;
+        self.ctrl_tx.write_all(b"HELO")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to write HELO to child: {}", e)))?;
         self.ctrl_tx.flush()
     }
 
     pub fn execute(&mut self, script: &[u8]) -> io::Result<ExecutionStatus> {
-        if self.crt_executions >= self.max_executions {
-            while let Err(e) = self.restart() {
-                // return Err(io::Error::new(
-                //     io::ErrorKind::Other,
-                //     format!("failed to restart process: {}", e),
-                // ));
-                eprintln!("failed to restart process: {}, retrying...", e);
-                thread::sleep(Duration::from_millis(100));
-            }
-            self.handshake()?;
-            self.crt_executions = 0;
-        }
+        // if self.crt_executions >= self.max_executions {
+        //     while let Err(e) = self.restart() {
+        //         // return Err(io::Error::new(
+        //         //     io::ErrorKind::Other,
+        //         //     format!("failed to restart process: {}", e),
+        //         // ));
+        //         eprintln!("failed to restart process: {}, retrying...", e);
+        //         thread::sleep(Duration::from_millis(100));
+        //     }
+        //     self.handshake()?;
+        //     self.crt_executions = 0;
+        // }
         self.ctrl_tx.write_all(b"exec")?;
         self.ctrl_tx
             .write_all(&(script.len() as u64).to_ne_bytes())?;

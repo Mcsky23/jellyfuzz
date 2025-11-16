@@ -131,7 +131,7 @@ impl VisitMut for NumericTweakerVisitor {
 
             // Weighted choice of mutation mode
             let choice = match self.in_for_stmt {
-                None | Some("init") | Some("update") => random_weighted_choice(
+                None => random_weighted_choice(
                     &mut self.rng,
                     &[
                         ("small_delta", 15),
@@ -152,7 +152,7 @@ impl VisitMut for NumericTweakerVisitor {
                         ("scale_mult", 4),
                     ],
                 ),
-                Some("test") => random_weighted_choice(
+                Some("test") | Some("init") | Some("update") => random_weighted_choice(
                     &mut self.rng,
                     &[
                         ("small_delta", 15),

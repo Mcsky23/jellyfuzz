@@ -254,7 +254,7 @@ async fn ingest_initial_corpus(
             };
             
             let exec_time = exec_start.elapsed().as_millis() as u64;
-            if job_result.status_code != 0 || job_result.is_timeout {
+            if job_result.status_code != 0 {
                 skipped_clone.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -319,7 +319,7 @@ async fn run_fuzz_loop(
 ) -> Result<()> {
     let mut iteration: u64 = 0;
     let mut handles = vec![];
-    let start = Instant::now();
+    let mut start = Instant::now();
     loop {
         iteration += 1;
         
@@ -416,9 +416,22 @@ async fn run_fuzz_loop(
             }
             {
                 let mut mgr = corpus_manager.lock().await;
+                // Update stats for the original corpus entry.
                 mgr.record_result(selection.id, reward, 0)
-                .await
-                .unwrap_or(());
+                    .await
+                    .unwrap_or(());
+                // Persist timeouts into corpus/timeouts for later triage.
+                if job_result.is_timeout {
+                    let _ = mgr
+                        .add_entry(
+                            &mutated_code,
+                            Vec::new(),
+                            0.0,
+                            0,
+                            true,
+                        )
+                        .await;
+                }
             }
             
             if job_result.is_crash {
@@ -475,9 +488,12 @@ async fn run_fuzz_loop(
             println!("executed {} iterations", iteration);
             let elapsed = start.elapsed();
             println!(
-                "Execs/sec: {:.2}",
+                "[{:?}] Execs/sec: {:.2}",
+                chrono::Utc::now().timestamp(),
                 (iteration) as f64 / elapsed.as_secs_f64()
             );
+            start = Instant::now();
+            iteration = 0;
             for mutator in mutators {
                 let stats = mutator.stats_snapshot();
                 let success_rate = if stats.uses == 0 {

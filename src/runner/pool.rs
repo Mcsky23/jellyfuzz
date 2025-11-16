@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::yield_now;
+use tokio::sync::Mutex;
 
 static NEXT_COV_CONTEXT_ID: AtomicI32 = AtomicI32::new(0);
 
@@ -36,7 +37,7 @@ impl Job {
             permit: Some(permit),
         }
     }
-
+    
     fn into_parts(mut self) -> (Vec<u8>, mpsc::Sender<anyhow::Result<JobResult>>) {
         // Dropping the permit here releases global queue capacity.
         self.permit.take();
@@ -55,13 +56,19 @@ pub struct JobResult {
     // pub edge_hash: Option<Vec
 }
 
-/// Stand-alone FuzzProcess wrapper that holds a queue for Js code to be executed in said process
-pub struct FuzzWorker {
+pub struct FuzzWorkerInternal {
     process: FuzzProcess,
     cov_ctx: CovContext,
+}
+
+/// Stand-alone FuzzProcess wrapper that holds a queue for Js code to be executed in said process
+pub struct FuzzWorker<T: JsEngineProfile + Clone + Send + Sync + 'static> {
+    internal: FuzzWorkerInternal,
     job_queue: mpsc::Receiver<Job>,
     job_tx: mpsc::Sender<Job>, // interface to send jobs to this worker
     edge_tracker: Arc<RwLock<EdgeTracker>>,
+    cache: FuzzWorkerCache,
+    profile: Arc<T>,
 }
 
 /// The fuzzer pool contains multiple fuzz processes
@@ -69,9 +76,8 @@ pub struct FuzzPool {
     job_senders: Vec<mpsc::Sender<Job>>,
     next_worker: usize,
     job_capacity: Arc<Semaphore>,
-    edge_tracker: Arc<RwLock<EdgeTracker>>,
+    edge_tracker: Arc<RwLock<EdgeTracker>>
 }
-
 
 // pub struct FuzzProcessCache {
 //     cache: 
@@ -88,11 +94,18 @@ pub struct EdgeTracker {
     max_resets: usize,
 }
 
-impl FuzzWorker {
-    pub fn new<T: JsEngineProfile>(
-        profile: &T,
-        edge_tracker: Arc<RwLock<EdgeTracker>>,
-    ) -> anyhow::Result<Self> {
+impl EdgeTracker {
+    pub fn new(max_resets: usize) -> Self {
+        Self {
+            seen_edges: HashSet::new(),
+            blacklist: HashMap::new(),
+            max_resets,
+        }
+    }
+}
+
+impl FuzzWorkerInternal {
+    pub fn new(profile: &impl JsEngineProfile) -> anyhow::Result<Self> {
         let mut cov_ctx = unsafe {
             let mut ctx = MaybeUninit::<CovContext>::zeroed().assume_init();
             ctx.id = NEXT_COV_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -102,49 +115,85 @@ impl FuzzWorker {
             ctx
         };
         let shm_id = format!("shm_id_{}_{}", std::process::id(), cov_ctx.id);
-
-        let mut target = FuzzProcess::spawn(profile, &shm_id)?;
-        target.handshake()?;
-
+        
+        let mut process = FuzzProcess::spawn(profile, &shm_id)?;
+        println!("Spawned FuzzProcess with PID {}; shm_id: {}", process.child.id(), shm_id);
+        process.handshake()?;
+        
         unsafe {
             cov_finish_initialization(&mut cov_ctx, 0);
         }
+        
+        Ok(Self { process, cov_ctx })
+    }
+}
 
+impl<T: JsEngineProfile + Clone + Send + Sync + 'static> FuzzWorker<T> {
+    pub fn new(
+        profile: &T,
+        edge_tracker: Arc<RwLock<EdgeTracker>>,
+    ) -> anyhow::Result<Self> {
+        let mut internal = FuzzWorkerInternal::new(profile)?;
+        
         let (job_queue_tx, job_queue_rx) = mpsc::channel(profile.fuzz_worker_job_queue_size());
-
-        Self::set_edge_count(&mut cov_ctx);
-
+        
+        println!(
+            "Created FuzzWorker for process PID {}",
+            internal.process.child.id()
+        );
+        
+        Self::set_edge_count(&mut internal.cov_ctx);
         Ok(Self {
-            process: target,
-            cov_ctx,
+            internal,
             job_queue: job_queue_rx,
             job_tx: job_queue_tx,
             edge_tracker,
+            cache: FuzzWorkerCache::new(1, profile),
+            profile: Arc::new(profile.clone()),
         })
     }
-
+    
     pub fn set_edge_count(cov_ctx: &mut CovContext) {
         let total_edge_count = cov_ctx.num_edges;
         if TOTAL_EDGE_COUNT.load(Ordering::SeqCst) == 0 {
             TOTAL_EDGE_COUNT.store(total_edge_count, Ordering::SeqCst);
         }
     }
-
+    
     pub fn get_job_sender(&self) -> mpsc::Sender<Job> {
         self.job_tx.clone()
     }
-
+    
+    fn restart(&mut self) -> anyhow::Result<()> {
+        let new_worker = self.cache.get_worker().unwrap_or_else(|| {
+            FuzzWorkerInternal::new(self.profile.as_ref())
+            .expect("Failed to create new FuzzWorkerInternal on restart")
+        });
+        self.internal = new_worker;
+        Ok(())
+    }
+    
+    
+    
     fn start_internal(&mut self, js_code: &[u8]) -> anyhow::Result<JobResult> {
-        unsafe {
-            cov_clear_bitmap(&mut self.cov_ctx);
+        if self.internal.process.crt_executions >= self.internal.process.max_executions {
+            self.restart()?;
         }
-        let exec_status = self.process.execute(js_code);
-        let timed_out =
-            matches!(exec_status, Err(ref err) if err.kind() == io::ErrorKind::TimedOut);
 
+        unsafe {
+            cov_clear_bitmap(&mut self.internal.cov_ctx);
+        }
+        let exec_status = self.internal.process.execute(js_code);
+        let timed_out =
+        matches!(exec_status, Err(ref err) if err.kind() == io::ErrorKind::TimedOut);
+        
         if timed_out {
-            self.process.restart()?;
-            self.process.handshake()?;
+            let start = std::time::Instant::now();
+            self.restart()?;
+            println!(
+                "Process restart took {:?}",
+                start.elapsed()
+            );
             return Ok(JobResult {
                 status_code: -1,
                 signal: 0,
@@ -154,7 +203,7 @@ impl FuzzWorker {
                 is_timeout: true,
             });
         }
-
+        
         let mut edge_hits = Vec::new();
         let mut new_cov_flag = false;
         if exec_status.is_ok() {
@@ -162,16 +211,16 @@ impl FuzzWorker {
                 count: 0,
                 edge_indices: std::ptr::null_mut(),
             };
-            let new_cov = unsafe { cov_evaluate(&mut self.cov_ctx, &mut edges) };
+            let new_cov = unsafe { cov_evaluate(&mut self.internal.cov_ctx, &mut edges) };
             if new_cov == 1 && !edges.edge_indices.is_null() {
                 let slice =
-                    unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
+                unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
                 edge_hits.extend_from_slice(slice);
                 unsafe { libc::free(edges.edge_indices as *mut c_void) };
             }
             new_cov_flag = new_cov == 1;
         }
-
+        
         if new_cov_flag && !edge_hits.is_empty() {
             match self.confirm_new_edges(js_code, &edge_hits) {
                 Ok(stable_edges) => {
@@ -202,8 +251,7 @@ impl FuzzWorker {
             }
         };
         if is_crash {
-            self.process.restart()?;
-            self.process.handshake()?;
+            self.restart()?;
         }
         let job_result = JobResult {
             status_code,
@@ -215,7 +263,7 @@ impl FuzzWorker {
         };
         Ok(job_result)
     }
-
+    
     /// Run the js code a second time and do intersection of edges to confirm stable new edges
     fn confirm_new_edges(
         &mut self,
@@ -225,51 +273,49 @@ impl FuzzWorker {
         if candidate_edges.is_empty() {
             return Ok(Vec::new());
         }
-
+        
         for &edge in candidate_edges {
-            unsafe { cov_clear_edge_data(&mut self.cov_ctx, edge) };
+            unsafe { cov_clear_edge_data(&mut self.internal.cov_ctx, edge) };
         }
-
-        unsafe { cov_clear_bitmap(&mut self.cov_ctx) };
-
-        let exec_status = self.process.execute(js_code);
+        
+        unsafe { cov_clear_bitmap(&mut self.internal.cov_ctx) };
+        
+        let exec_status = self.internal.process.execute(js_code);
         let timed_out =
-            matches!(exec_status, Err(ref err) if err.kind() == io::ErrorKind::TimedOut);
+        matches!(exec_status, Err(ref err) if err.kind() == io::ErrorKind::TimedOut);
         if timed_out {
-            self.process.restart()?;
-            self.process.handshake()?;
+            self.restart()?;
             return Ok(Vec::new());
         }
-
+        
         if exec_status.is_err() {
             println!("Re-execution failed: {:?}", exec_status.err());
-            self.process.restart()?;
-            self.process.handshake()?;
+            self.restart()?;
             return Ok(Vec::new());
         }
-
+        
         let mut edges = EdgeSet {
             count: 0,
             edge_indices: std::ptr::null_mut(),
         };
-        let new_cov = unsafe { cov_evaluate(&mut self.cov_ctx, &mut edges) };
-
+        let new_cov = unsafe { cov_evaluate(&mut self.internal.cov_ctx, &mut edges) };
+        
         if edges.edge_indices.is_null() {
             return Ok(Vec::new());
         }
-
+        
         let second_slice =
-            unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
+        unsafe { std::slice::from_raw_parts(edges.edge_indices, edges.count as usize) };
         let mut first_set: HashSet<u32> = HashSet::with_capacity(candidate_edges.len());
         let mut second_set: HashSet<u32> = HashSet::with_capacity(second_slice.len());
         
         first_set.extend(candidate_edges.iter());
         second_set.extend(second_slice.iter());
         let mut stable_edges = Vec::new();
-
+        
         // aux tracking buffer(so we don't have to lock multiple times)
         let mut aux_tracker = HashMap::new();
-
+        
         for &edge in candidate_edges {
             if !second_set.contains(&edge) {
                 let reset_count = aux_tracker.entry(edge).or_insert(0);
@@ -277,22 +323,22 @@ impl FuzzWorker {
                 // unsafe { cov_clear_edge_data(&mut self.cov_ctx, edge) };
             }
         }
-
+        
         for &edge in second_slice {
             if first_set.contains(&edge) {
                 stable_edges.push(edge);
             } else {
                 let reset_count = aux_tracker.entry(edge).or_insert(0);
                 *reset_count += 1;
-                unsafe { cov_clear_edge_data(&mut self.cov_ctx, edge) };
+                unsafe { cov_clear_edge_data(&mut self.internal.cov_ctx, edge) };
             }
         }
         unsafe { libc::free(edges.edge_indices as *mut c_void) };
-
+        
         if new_cov != 1 {
             return Ok(Vec::new());
         }
-
+        
         // Update edge tracker
         let stable_edges = {
             let mut tracker = self.edge_tracker.blocking_write();
@@ -306,7 +352,7 @@ impl FuzzWorker {
             let mut stable_edges_curated = vec![];
             for &edge in &stable_edges {
                 if tracker.blacklist.get(&edge).unwrap_or(&0) >= &tracker.max_resets || 
-                    tracker.seen_edges.contains(&edge) {
+                tracker.seen_edges.contains(&edge) {
                     continue;
                 }
                 stable_edges_curated.push(edge);
@@ -314,34 +360,105 @@ impl FuzzWorker {
             }
             stable_edges_curated
         };
-
+        
         Ok(stable_edges)
     }
-
+    
     /// Start the fuzz worker's main loop
     pub async fn run(mut self) -> anyhow::Result<()> {
         while let Some(job) = self.job_queue.recv().await {
             let (js_code, result_tx) = job.into_parts();
             let job_result = tokio::task::block_in_place(|| self.start_internal(&js_code))?;
             result_tx
-                .send(Ok(job_result))
-                .await
-                .map_err(|_| anyhow::anyhow!("failed to deliver job result"))?;
+            .send(Ok(job_result))
+            .await
+            .map_err(|_| anyhow::anyhow!("failed to deliver job result"))?;
         }
         Ok(())
     }
 }
 
+struct FuzzWorkerCache {
+    cache_size: usize,
+    cache: Arc<Mutex<Vec<FuzzWorkerInternal>>>,
+    cache_refill_tx: Option<mpsc::Sender<()>>,
+}
+
+impl FuzzWorkerCache {
+    pub fn new(cache_size: usize, profile: &impl JsEngineProfile) -> Self {
+        let mut cache = Vec::with_capacity(cache_size);
+        for _ in 0..cache_size {
+            let worker = FuzzWorkerInternal::new(profile).expect("Failed to create FuzzWorkerInternal for cache");
+            cache.push(worker);
+        }
+        
+        Self {
+            cache_size,
+            cache: Arc::new(Mutex::new(cache)),
+            
+            cache_refill_tx: None,
+        }
+    }
+    
+    pub fn get_worker(&mut self) -> Option<FuzzWorkerInternal> {
+        let worker = self.cache.blocking_lock().pop();
+        if let Some(ref tx) = self.cache_refill_tx {
+            let _ = tx.try_send(());
+        }
+        worker
+    }
+    
+    /// Start a background task that keeps the cache filled.
+    pub fn start_refiller<T>(&mut self, profile: T)
+    where
+        T: JsEngineProfile + Clone + Send + Sync + 'static,
+    {
+        // Only set up the channel once.
+        if self.cache_refill_tx.is_some() {
+            return;
+        }
+
+        let (tx, mut cache_refill_rx) = mpsc::channel::<()>(1);
+        self.cache_refill_tx = Some(tx.clone());
+
+        let self_cache = self.cache.clone();
+        let cache_size = self.cache_size;
+        let profile_clone = profile.clone();
+
+        tokio::spawn(async move {
+            // Initial fill if needed.
+            loop {
+                if cache_refill_rx.recv().await.is_none() {
+                    break;
+                }
+                while self_cache.lock().await.len() < cache_size {
+                    match FuzzWorkerInternal::new(&profile_clone) {
+                        Ok(worker) => {
+                            self_cache.lock().await.push(worker);
+                        }
+                        Err(err) => {
+                            eprintln!("Failed to create FuzzWorkerInternal for cache: {:?}", err);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 impl FuzzPool {
-    pub fn new<T: JsEngineProfile>(num_workers: usize, profile: &T) -> anyhow::Result<Self> {
+    pub fn new<T: JsEngineProfile + Clone + Send + Sync + 'static>(
+        num_workers: usize,
+        profile: &T,
+    ) -> anyhow::Result<Self> {
         let mut job_senders = Vec::new();
-        let edge_tracker = Arc::new(RwLock::new(EdgeTracker {
-            seen_edges: HashSet::new(),
-            blacklist: HashMap::new(),
-            max_resets: 1000,
-        }));
+        let edge_tracker = Arc::new(RwLock::new(EdgeTracker::new(1000)));
+
         for _ in 0..num_workers {
-            let worker = FuzzWorker::new(profile, edge_tracker.clone())?;
+            let mut worker = FuzzWorker::new(profile, edge_tracker.clone())?;
+            worker.cache.start_refiller(profile.clone());
+
             let job_tx = worker.get_job_sender();
             tokio::spawn(async move {
                 if let Err(err) = worker.run().await {
@@ -350,6 +467,7 @@ impl FuzzPool {
             });
             job_senders.push(job_tx);
         }
+
         let queue_capacity = num_workers * profile.fuzz_worker_job_queue_size().max(1);
         Ok(Self {
             job_senders,
@@ -358,7 +476,7 @@ impl FuzzPool {
             edge_tracker,
         })
     }
-
+    
     /// Schedule a job to be executed by one of the FuzzWorkers
     pub async fn schedule_job(
         &mut self,
@@ -367,17 +485,17 @@ impl FuzzPool {
         if self.job_senders.is_empty() {
             return Err(anyhow::anyhow!("No fuzz workers available"));
         }
-
+        
         let (result_tx, result_rx) = mpsc::channel(1);
         let worker_count = self.job_senders.len();
         let permit = self
-            .job_capacity
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| anyhow::anyhow!("Fuzz pool capacity semaphore closed"))?;
+        .job_capacity
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow::anyhow!("Fuzz pool capacity semaphore closed"))?;
         let mut job = Job::new(js_code, result_tx, permit);
-
+        
         loop {
             for offset in 0..worker_count {
                 let idx = (self.next_worker + offset) % worker_count;
@@ -397,16 +515,16 @@ impl FuzzPool {
             yield_now().await;
         }
     }
-
+    
     /// Execute a job and wait for the result
     pub async fn execute_job(&mut self, js_code: Vec<u8>) -> anyhow::Result<JobResult> {
         self.schedule_job(js_code)
-            .await?
-            .recv()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Failed to receive job result"))?
+        .await?
+        .recv()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Failed to receive job result"))?
     }
-
+    
     pub async fn print_pool_stats(&self) {
         let tracker = self.edge_tracker.read().await;
         println!(
@@ -419,8 +537,8 @@ impl FuzzPool {
     }
 }
 
-impl Drop for FuzzWorker {
+impl<T: JsEngineProfile + Clone + Send + Sync + 'static> Drop for FuzzWorker<T> {
     fn drop(&mut self) {
-        let _ = self.process.child.kill();
+        let _ = self.internal.process.child.kill();
     }
 }
