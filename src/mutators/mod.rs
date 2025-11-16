@@ -4,6 +4,7 @@ pub mod literals;
 pub mod minifier;
 pub mod operators;
 pub mod scope;
+pub mod js_types;
 
 use std::sync::{Arc, Mutex};
 
@@ -116,6 +117,10 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
         Arc::new(ManagedMutator::new(
             "ElementAccessor",
             Box::new(elements::ElementAccessorMutator {}),
+        )),
+        Arc::new(ManagedMutator::new(
+            "MethodCallMutator",
+            Box::new(elements::MethodCallMutator {}),
         )),
     ]
 }

@@ -10,10 +10,10 @@ use crate::mutators::AstMutator;
 use crate::mutators::scope::{
     ScopeKind, ScopeStack, ScopedAstVisitor, extend_params_from_fn_params, for_stmt_visitor, scoped_visit_mut_methods
 };
-
-const STATIC_PROPERTIES: &[&str] = &["__proto__", "__length__", "foo"];
+use crate::mutators::js_types::*;
 
 pub struct ElementAccessorMutator;
+pub struct MethodCallMutator;
 
 fn number_expr(value: f64) -> Expr {
     let raw_string = if value.fract() == 0.0 {
@@ -132,7 +132,7 @@ impl ElementAccessorVisitor {
             }
         }
 
-        let property = STATIC_PROPERTIES
+        let property = get_property_list()
             .choose(&mut self.rng)
             .copied()
             .unwrap_or("__proto__");
@@ -215,6 +215,161 @@ impl AstMutator for ElementAccessorMutator {
             ast.visit_mut_with(&mut visitor);
         }
 
+        Ok(ast)
+    }
+}
+
+fn string_expr_from_atom(value: &str) -> Expr {
+    Expr::Lit(Lit::Str(Str {
+        span: DUMMY_SP,
+        value: Atom::from(value).into(),
+        raw: None,
+    }))
+}
+
+fn empty_function_expr() -> Expr {
+    Expr::Fn(FnExpr {
+        ident: None,
+        function: Box::new(Function {
+            params: Vec::new(),
+            decorators: Vec::new(),
+            span: DUMMY_SP,
+            ctxt: Default::default(),
+            body: Some(BlockStmt {
+                span: DUMMY_SP,
+                ctxt: Default::default(),
+                stmts: Vec::new(),
+            }),
+            is_generator: false,
+            is_async: false,
+            type_params: None,
+            return_type: None,
+        }),
+    })
+}
+
+struct MethodCallVisitor {
+    rng: rand::rngs::ThreadRng,
+    target_idx: usize,
+    current_idx: usize,
+    replaced: bool,
+}
+
+impl MethodCallVisitor {
+    fn new(rng: rand::rngs::ThreadRng, target_idx: usize) -> Self {
+        Self {
+            rng,
+            target_idx,
+            current_idx: 0,
+            replaced: false,
+        }
+    }
+
+    fn build_arg_expr(&mut self, ty: ObjectType) -> Expr {
+        match ty {
+            ObjectType::Number => {
+                let v = self.rng.random_range(-100i32..=100i32) as f64;
+                number_expr(v)
+            }
+            ObjectType::String => {
+                let choices = ["foo", "bar", "baz", "qux"];
+                let s = choices
+                    .choose(&mut self.rng)
+                    .copied()
+                    .unwrap_or("s");
+                string_expr_from_atom(s)
+            }
+            ObjectType::Object => Expr::Object(ObjectLit {
+                span: DUMMY_SP,
+                props: Vec::new(),
+            }),
+            ObjectType::Function => empty_function_expr(),
+            ObjectType::Any => {
+                // Pick a concrete type for Any.
+                let concrete = match self.rng.random_range(0..4) {
+                    0 => ObjectType::Number,
+                    1 => ObjectType::String,
+                    2 => ObjectType::Object,
+                    _ => ObjectType::Function,
+                };
+                self.build_arg_expr(concrete)
+            }
+        }
+    }
+
+    fn build_method_call(&mut self, base: Expr) -> Expr {
+        let methods: Vec<&StaticPropertySig> = STATIC_PROPERTIES
+            .iter()
+            .filter(|sig| sig.is_method)
+            .collect();
+        if methods.is_empty() {
+            return base;
+        }
+        let sig = methods
+            .choose(&mut self.rng)
+            .copied()
+            .unwrap_or(&STATIC_PROPERTIES[0]);
+
+        let member_ident = IdentName::new(Atom::from(sig.name), DUMMY_SP);
+        let callee_expr = Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj: Box::new(base),
+            prop: MemberProp::Ident(member_ident),
+        });
+
+        let args: Vec<ExprOrSpread> = sig
+            .args
+            .iter()
+            .map(|ty| ExprOrSpread {
+                spread: None,
+                expr: Box::new(self.build_arg_expr(*ty)),
+            })
+            .collect();
+
+        Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: Default::default(),
+            callee: Callee::Expr(Box::new(callee_expr)),
+            args,
+            type_args: None,
+        })
+    }
+}
+
+impl VisitMut for MethodCallVisitor {
+    fn visit_mut_expr(&mut self, node: &mut Expr) {
+        if self.replaced {
+            node.visit_mut_children_with(self);
+            return;
+        }
+
+        if let Expr::Ident(ident) = node {
+            let idx = self.current_idx;
+            self.current_idx += 1;
+            if idx == self.target_idx {
+                let base = Expr::Ident(ident.clone());
+                let call_expr = self.build_method_call(base);
+                *node = call_expr;
+                self.replaced = true;
+                return;
+            }
+        }
+
+        node.visit_mut_children_with(self);
+    }
+}
+
+impl AstMutator for MethodCallMutator {
+    fn mutate(&self, mut ast: Script) -> Result<Script> {
+        let mut collector = IdentCollector::default();
+        ast.visit_with(&mut collector);
+        let mut rng = rand::rng();
+        let ident_count = collector.idents.len();
+        if ident_count > 0 {
+            let target_idx = rng.random_range(0..ident_count);
+            let mut visitor = MethodCallVisitor::new(rng, target_idx);
+            ast.visit_mut_with(&mut visitor);
+        }
         Ok(ast)
     }
 }

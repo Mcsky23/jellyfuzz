@@ -21,6 +21,8 @@ struct NumericTweakerVisitor {
 }
 
 impl NumericTweakerVisitor {
+    const FOR_TEST_MAX_ABS: f64 = 1_000.0;
+
     fn new(lit_count: usize) -> Self {
         let mut rng = rand::rng();
         let idx_to_mutate = rng.random_range(0..lit_count);
@@ -34,6 +36,30 @@ impl NumericTweakerVisitor {
             crt_idx: 0,
             in_for_stmt: None,
         }
+    }
+
+    fn clamp_for_test_bound(&self, original: f64, value: f64) -> f64 {
+        let mut v = if value.is_finite() {
+            value
+        } else {
+            // Fall back to original if we produced NaN/Infinity.
+            original
+        };
+
+        // Clamp to a reasonable range to avoid very slow loops.
+        v = v.clamp(-Self::FOR_TEST_MAX_ABS, Self::FOR_TEST_MAX_ABS);
+
+        // Test bounds are typically non‑negative.
+        if v < 0.0 {
+            v = 0.0;
+        }
+
+        // Avoid turning a clearly bounded loop into a no‑op.
+        if v == 0.0 && original > 0.0 {
+            v = 1.0;
+        }
+
+        v
     }
 
     /// Choose a random power-of-two value (2^n) within a safe exponent range.
@@ -129,58 +155,112 @@ impl VisitMut for NumericTweakerVisitor {
             let original = num_lit.value;
             let mut new_value = original;
 
-            // Weighted choice of mutation mode
-            let choice = match self.in_for_stmt {
-                None => random_weighted_choice(
-                    &mut self.rng,
-                    &[
-                        ("small_delta", 15),
-                        ("add_one", 15),
-                        ("sub_one", 15),
-                        ("flip_sign", 10),
-                        ("to_nan", 4),
-                        ("to_undefined", 1),
-                        ("to_null", 1),
-                        ("to_infinity", 4),
-                        ("to_neg_infinity", 4),
-                        ("to_neg_zero", 6),
-                        ("to_extreme_large", 4),
-                        ("to_extreme_small", 4),
-                        ("pow2", 4),
-                        ("random_fraction", 5),
-                        ("truncate_int", 4),
-                        ("scale_mult", 4),
-                    ],
-                ),
-                // TODO: figure out good mutations for for-loop literals
-                Some("test") => random_weighted_choice(
-                    &mut self.rng,
-                    &[
-                        // ("small_delta", 15),
-                        // ("add_one", 15),
-                        // ("sub_one", 15),
-                        // ("turn_to_10k", 1), // to trigger JIT optimizations
-                        ("do_nothing", 99),
-                        // ("flip_sign", 10),
-                        // ("to_neg_zero", 10),
-                        // ("to_nan", 5),
-                        // ("to_undefined", 5),
-                        // ("to_null", 5),
-                    ],
-                ),
-                Some("init") | Some("update") => "do_nothing",
-                _ => unreachable!(),
-            };
+            // For loop headers are particularly sensitive to large numeric
+            // changes: they easily turn into long‑running or even non‑
+            // terminating loops. For those, perform only small, bounded
+            // tweaks.
+            if let Some(ctx) = self.in_for_stmt {
+                match ctx {
+                    // Be conservative for init/update: they influence trip count
+                    // heavily, so we currently leave them unchanged.
+                    "init" | "update" => return,
+                    "test" => {
+                        // Apply a small, *integral* perturbation to the upper bound.
+                        // For loops are almost always integer‑counted; snapping to
+                        // integers keeps behavior predictable and avoids useless
+                        // fractional bounds.
+                        let mode = random_weighted_choice(
+                            &mut self.rng,
+                            &[
+                                ("inc", 6),
+                                ("dec", 4),
+                                ("scale_down", 3),
+                                ("scale_up", 1),
+                                ("keep", 8),
+                            ],
+                        );
+                        match mode {
+                            "inc" => {
+                                let step = self.rng.random_range(1i32..=5i32) as f64;
+                                new_value = original + step;
+                            }
+                            "dec" => {
+                                let step = self.rng.random_range(1i32..=5i32) as f64;
+                                new_value = original - step;
+                            }
+                            "scale_down" => {
+                                new_value = original * 0.5;
+                            }
+                            "scale_up" => {
+                                new_value = original * 2.0;
+                            }
+                            "keep" | _ => {
+                                new_value = original;
+                            }
+                        }
+
+                        // Snap to nearest integer to avoid odd fractional loop
+                        // bounds that rarely matter for coverage.
+                        new_value = new_value.round();
+
+                        new_value = self.clamp_for_test_bound(original, new_value);
+
+                        num_lit.value = new_value;
+                        let raw = self.format_number_raw(new_value);
+                        num_lit.raw = Some(Atom::from(raw.as_str()));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Non‑loop literals: weighted choice of mutation mode.
+            // Bias towards small, local changes; keep extreme and
+            // exceptional values at lower probability so they still
+            // occur but don't dominate.
+            let choice = random_weighted_choice(
+                &mut self.rng,
+                &[
+                    ("small_delta", 18),
+                    ("inc", 15),
+                    ("dec", 15),
+                    ("flip_sign", 10),
+                    ("truncate_int", 8),
+                    ("random_fraction", 8),
+                    ("scale_mult", 8),
+                    ("to_neg_zero", 5),
+                    ("pow2", 4),
+                    ("to_extreme_large", 3),
+                    ("to_extreme_small", 3),
+                    ("to_nan", 2),
+                    ("to_infinity", 2),
+                    ("to_neg_infinity", 2),
+                    ("to_undefined", 1),
+                    ("to_null", 1),
+                ],
+            );
 
             match choice {
                 "small_delta" => {
-                    new_value += small_delta(&mut self.rng, original);
+                    // For integer-valued literals, treat small_delta as a
+                    // small *integral* adjustment to keep the value in the
+                    // same "shape" while still exploring nearby values.
+                    if self.rng.random_bool(0.7) {
+                        let delta = small_delta(&mut self.rng, 1.0)
+                            .round()
+                            .clamp(-10.0, 10.0);
+                        new_value = original + delta;
+                    } else {
+                        new_value += small_delta(&mut self.rng, original);
+                    }
                 }
-                "add_one" => {
-                    new_value += 1.0;
+                "inc" => {
+                    let step = self.rng.random_range(1i32..=5i32) as f64;
+                    new_value = original + step;
                 }
-                "sub_one" => {
-                    new_value -= 1.0;
+                "dec" => {
+                    let step = self.rng.random_range(1i32..=5i32) as f64;
+                    new_value = original - step;
                 }
                 "turn_to_10k" => {
                     new_value = 10_000.0;
