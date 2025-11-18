@@ -32,6 +32,7 @@ pub struct FuzzProcess {
 pub struct ExecutionStatus {
     pub exit_code: i32,
     pub signal: i32,
+    pub exec_time_ms: Duration,
 }
 
 fn make_inheritable(fd: RawFd) -> io::Result<()> {
@@ -181,6 +182,7 @@ impl FuzzProcess {
         //     self.handshake()?;
         //     self.crt_executions = 0;
         // }
+        let start_time = Instant::now();
         self.ctrl_tx.write_all(b"exec")?;
         self.ctrl_tx
             .write_all(&(script.len() as u64).to_ne_bytes())?;
@@ -194,7 +196,7 @@ impl FuzzProcess {
         let signal = (raw & 0xff) as i32;
         let exit_code = ((raw >> 8) & 0xff) as i32;
         self.crt_executions += 1;
-        Ok(ExecutionStatus { exit_code, signal })
+        Ok(ExecutionStatus { exit_code, signal, exec_time_ms: start_time.elapsed() } )
     }
 }
 

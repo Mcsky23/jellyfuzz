@@ -5,6 +5,7 @@ pub mod minifier;
 pub mod operators;
 pub mod scope;
 pub mod js_types;
+pub mod splice;
 
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +15,9 @@ use crate::utils::rand_utils::random_weighted_choice;
 
 pub trait AstMutator: Send + Sync {
     fn mutate(&self, ast: Script) -> anyhow::Result<Script>;
+    fn splice(&self, _ast: &Script, _donor: &Script) -> anyhow::Result<Script> {
+        Err(anyhow::anyhow!("splice not implemented for this mutator"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,14 +47,16 @@ pub struct ManagedMutator {
     name: String,
     mutator: Box<dyn AstMutator>,
     stats: Mutex<MutatorStats>,
+    splicer: bool,
 }
 
 impl ManagedMutator {
-    pub fn new(name: impl Into<String>, mutator: Box<dyn AstMutator>) -> Self {
+    pub fn new(name: impl Into<String>, mutator: Box<dyn AstMutator>, splicer: bool) -> Self {
         Self {
             name: name.into(),
             mutator,
             stats: Mutex::new(MutatorStats::default()),
+            splicer,
         }
     }
 
@@ -62,6 +68,15 @@ impl ManagedMutator {
         // TODO: consider not locking everytime and changing this to an atomic update
         self.stats.lock().expect("mutator stats poisoned").uses += 1;
         self.mutator.mutate(ast)
+    }
+
+    pub fn splice(&self, ast: &Script, donor: &Script) -> anyhow::Result<Script> {
+        self.stats.lock().expect("mutator stats poisoned").uses += 1;
+        self.mutator.splice(ast, donor)
+    }
+
+    pub fn is_splicer(&self) -> bool {
+        self.splicer
     }
 
     pub fn record_reward(&self, reward: f64) {
@@ -97,30 +112,52 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
         Arc::new(ManagedMutator::new(
             "NumericTweaker",
             Box::new(literals::NumericTweaker::new()),
+            false,
         )),
         Arc::new(ManagedMutator::new(
             "BooleanFlipper",
             Box::new(literals::BooleanFlipper {}),
+            false,
         )),
         Arc::new(ManagedMutator::new(
             "ArrayLengthMutator",
             Box::new(literals::ArrayLengthMutator {}),
+            false,
         )),
         Arc::new(ManagedMutator::new(
             "OperatorSwap",
             Box::new(operators::OperatorSwap {}),
+            false,
         )),
         Arc::new(ManagedMutator::new(
             "ExpressionSwapDup",
             Box::new(expressions::ExpressionSwapDup {}),
+            false,
         )),
-        Arc::new(ManagedMutator::new(
-            "ElementAccessor",
-            Box::new(elements::ElementAccessorMutator {}),
-        )),
+        // Arc::new(ManagedMutator::new(
+        //     "ElementAccessor",
+        //     Box::new(elements::ElementAccessorMutator {}),
+        //     false,
+        // )),
         Arc::new(ManagedMutator::new(
             "MethodCallMutator",
             Box::new(elements::MethodCallMutator {}),
+            false,
+        )),
+        Arc::new(ManagedMutator::new(
+            "IdentSwapMutator",
+            Box::new(expressions::IdentSwapMutator {}),
+            false,
+        )),
+        Arc::new(ManagedMutator::new(
+            "RemovePropMutator",
+            Box::new(elements::RemovePropMutator {}),
+            false,
+        )),
+        Arc::new(ManagedMutator::new(
+            "SpliceMutator",
+            Box::new(splice::SpliceMutator {}),
+            true,
         )),
     ]
 }

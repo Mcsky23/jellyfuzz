@@ -1,7 +1,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
 use anyhow::{Context, Result};
 use rand::Rng;
@@ -20,7 +22,7 @@ pub struct CorpusEntry {
     pub size_bytes: usize,
     pub total_reward: f64,
     pub last_reward: f64,
-    pub exec_time_ms: u64,
+    pub exec_time_ms: Duration,
     pub num_mutations: u64,
     pub last_selected_ts: Option<u64>,
 }
@@ -112,12 +114,12 @@ impl CorpusManager {
         })
     }
 
-    pub async fn record_result(&mut self, id: u64, reward: f64, exec_time_ms: u64) -> Result<()> {
+    pub async fn record_result(&mut self, id: u64, reward: f64, exec_time_ms: Duration) -> Result<()> {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
             entry.last_reward = reward;
             entry.total_reward += reward;
             entry.exec_time_ms = exec_time_ms;
-            // self.persist().await?; // TODO: optimize by only calling this function after a number of updates
+            self.persist().await?; // TODO: optimize by only calling this function after a number of updates
         }
         Ok(())
     }
@@ -127,7 +129,7 @@ impl CorpusManager {
         script_bytes: &[u8],
         edge_hits: Vec<u32>,
         reward: f64,
-        exec_time_ms: u64,
+        exec_time_ms: Duration,
         is_timeout: bool,
     ) -> Result<Option<CorpusEntry>> {
         let fingerprint = compute_fingerprint(script_bytes, &edge_hits);
@@ -177,7 +179,7 @@ impl CorpusManager {
             last_selected_ts: None,
         };
         self.entries.push(entry.clone());
-        // self.persist().await?; // TODO: optimize by only calling this function after a number of additions
+        self.persist().await?; // TODO: optimize by only calling this function after a number of additions
         Ok(Some(entry))
     }
 
@@ -190,7 +192,7 @@ impl CorpusManager {
                     .await
                     .with_context(|| format!("failed to remove corpus entry {:?}", absolute_path))?;
             }
-            // self.persist().await?;
+            self.persist().await?;
         }
         Ok(())
     }
@@ -214,6 +216,22 @@ impl CorpusManager {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub async fn get_random_script(&self) -> Result<Option<Script>> {
+        if self.entries.is_empty() {
+            return Ok(None);
+        }
+        let mut rng = rand::rng();
+        let idx = rng.random_range(0..self.entries.len());
+        let entry = &self.entries[idx];
+        let absolute_path = self.root.join(&entry.path);
+        let script_bytes = fs::read(&absolute_path)
+            .await
+            .with_context(|| format!("failed to read corpus entry {:?}", absolute_path))?;
+        let script = crate::parsing::parser::parse_js(String::from_utf8_lossy(&script_bytes).to_string())
+            .with_context(|| format!("failed to parse corpus entry {:?}", absolute_path))?;
+        Ok(Some(script))
     }
 }
 

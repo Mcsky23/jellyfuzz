@@ -18,10 +18,12 @@ struct NumericTweakerVisitor {
     idx_to_mutate: usize,
     crt_idx: usize,
     in_for_stmt: Option<&'static str>, // know if I'm visitng the literals of the init/test/update of a for statement
+    in_array_index: bool,              // true while visiting a computed member index, e.g. arr[<here>]
 }
 
 impl NumericTweakerVisitor {
     const FOR_TEST_MAX_ABS: f64 = 1_000.0;
+    const ARRAY_INDEX_MAX: f64 = 1_024.0;
 
     fn new(lit_count: usize) -> Self {
         let mut rng = rand::rng();
@@ -35,6 +37,7 @@ impl NumericTweakerVisitor {
             idx_to_mutate,
             crt_idx: 0,
             in_for_stmt: None,
+            in_array_index: false,
         }
     }
 
@@ -136,6 +139,24 @@ impl VisitMut for NumericTweakerVisitor {
         node.body.visit_mut_with(self);
         self.in_for_stmt = prev_in_for;
     }
+
+    fn visit_mut_member_expr(&mut self, node: &mut MemberExpr) {
+        // Visit the object part normally.
+        node.obj.visit_mut_with(self);
+
+        // When visiting a computed property (`obj[expr]`), mark any numeric
+        // literals inside `expr` as array indices so we can bias them towards
+        // small values and avoid huge, timeout‑prone indices.
+        let prev_in_array_index = self.in_array_index;
+        if let MemberProp::Computed(comp) = &mut node.prop {
+            self.in_array_index = true;
+            comp.visit_mut_with(self);
+            self.in_array_index = prev_in_array_index;
+        } else {
+            node.prop.visit_mut_with(self);
+        }
+    }
+
     fn visit_mut_lit(&mut self, node: &mut Lit) {
         node.visit_mut_children_with(self);
 
@@ -212,6 +233,56 @@ impl VisitMut for NumericTweakerVisitor {
                     }
                     _ => {}
                 }
+            }
+
+            // Numeric literals used as computed member indices, e.g. `arr[0]`.
+            // Very large indices can cause the engine to allocate or search
+            // huge sparse arrays and lead to timeouts, so strongly bias these
+            // mutations towards small, non‑negative integers.
+            if self.in_array_index {
+                let choice = random_weighted_choice(
+                    &mut self.rng,
+                    &[
+                        ("keep", 12),
+                        ("small_delta", 10),
+                        ("random_small", 8),
+                        ("zero", 6),
+                        ("one", 6),
+                    ],
+                );
+
+                match choice {
+                    "small_delta" => {
+                        let delta = self.rng.random_range(-3i32..=3i32) as f64;
+                        new_value = (original + delta).round();
+                    }
+                    "random_small" => {
+                        new_value = self.rng.random_range(0i32..=32i32) as f64;
+                    }
+                    "zero" => {
+                        new_value = 0.0;
+                    }
+                    "one" => {
+                        new_value = 1.0;
+                    }
+                    "keep" | _ => {
+                        new_value = original;
+                    }
+                }
+
+                // Clamp to a safe index range and snap to integer.
+                if new_value < 0.0 {
+                    new_value = 0.0;
+                }
+                if new_value > Self::ARRAY_INDEX_MAX {
+                    new_value = Self::ARRAY_INDEX_MAX;
+                }
+                new_value = new_value.round();
+
+                num_lit.value = new_value;
+                let raw = self.format_number_raw(new_value);
+                num_lit.raw = Some(Atom::from(raw.as_str()));
+                return;
             }
 
             // Non‑loop literals: weighted choice of mutation mode.

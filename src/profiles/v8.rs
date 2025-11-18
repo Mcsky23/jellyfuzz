@@ -26,4 +26,9 @@ impl JsEngineProfile for V8Profile {
     fn get_jobs_per_process(&self) -> usize {
         400
     }
+
+    /// number of newly discovered coverage edges required to add input to corpus
+    fn get_min_new_edges_to_add_corpus(&self) -> usize {
+        10
+    }
 }

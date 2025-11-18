@@ -334,3 +334,87 @@ impl AstMutator for ExpressionSwapDup {
         Ok(ast)
     }
 }
+
+
+pub struct IdentSwapMutator;
+
+impl AstMutator for IdentSwapMutator {
+    fn mutate(&self, mut ast: Script) -> anyhow::Result<Script> {
+        struct IdentSwapVisitor {
+            rng: rand::rngs::ThreadRng,
+            candidates: Vec<Ident>,
+            counter_mode: bool,
+            current_idx: usize,
+            idx_to_swap: usize,
+            in_for_stmt: Option<&'static str>,
+        }
+
+        impl VisitMut for IdentSwapVisitor {
+            for_stmt_visitor!(mut);
+
+            fn visit_mut_expr(&mut self, node: &mut Expr) {
+                if self.in_for_stmt.is_some() {
+                    node.visit_mut_children_with(self);
+                    return;
+                }
+                match node {
+                    Expr::Ident(ident) => {
+                        if !self.counter_mode {
+                            if self.current_idx == self.idx_to_swap {
+                                let compatible: Vec<&Ident> = self
+                                    .candidates
+                                    .iter()
+                                    .filter(|cand| {
+                                        cand.sym != ident.sym
+                                            && (cand.ctxt == ident.ctxt
+                                                || cand.ctxt == SyntaxContext::empty()
+                                                || ident.ctxt == SyntaxContext::empty())
+                                    })
+                                    .collect();
+
+                                if !compatible.is_empty() {
+                                    if let Some(replacement) = compatible.choose(&mut self.rng) {
+                                        ident.sym = replacement.sym.clone();
+                                        ident.ctxt = replacement.ctxt;
+                                    }
+                                }
+                            }
+                            self.current_idx += 1;
+                        } else {
+                            self.candidates.push(ident.clone());
+                        }
+                    }
+                    _ => node.visit_mut_children_with(self),
+                }
+            }
+        }
+
+        let mut collector = IdentSwapVisitor {
+            rng: rand::rng(),
+            candidates: Vec::new(),
+            counter_mode: true,
+            current_idx: 0,
+            idx_to_swap: 0,
+            in_for_stmt: None,
+        };
+        ast.visit_mut_with(&mut collector);
+        let total_idents = collector.candidates.len();
+        if total_idents < 2 {
+            return Ok(ast);
+        }
+
+        let idx_to_swap = rand::rng().random_range(0..total_idents);
+        let mut swapper = IdentSwapVisitor {
+            rng: rand::rng(),
+            candidates: collector.candidates,
+            counter_mode: false,
+            current_idx: 0,
+            idx_to_swap,
+            in_for_stmt: None,
+        };
+        ast.visit_mut_with(&mut swapper);
+        Ok(ast)
+    }
+
+}
+

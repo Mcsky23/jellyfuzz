@@ -253,6 +253,7 @@ struct MethodCallVisitor {
     target_idx: usize,
     current_idx: usize,
     replaced: bool,
+    in_for_stmt: Option<&'static str>,
 }
 
 impl MethodCallVisitor {
@@ -262,6 +263,24 @@ impl MethodCallVisitor {
             target_idx,
             current_idx: 0,
             replaced: false,
+            in_for_stmt: None,
+        }
+    }
+
+    fn build_synthetic_base(&mut self) -> Expr {
+        match self.rng.random_range(0..3) {
+            // Plain object {}.
+            0 => Expr::Object(ObjectLit {
+                span: DUMMY_SP,
+                props: Vec::new(),
+            }),
+            // Empty array [].
+            1 => Expr::Array(ArrayLit {
+                span: DUMMY_SP,
+                elems: Vec::new(),
+            }),
+            // Empty function () => {}.
+            _ => empty_function_expr(),
         }
     }
 
@@ -310,10 +329,19 @@ impl MethodCallVisitor {
             .copied()
             .unwrap_or(&STATIC_PROPERTIES[0]);
 
+        // With some probability, call the method on a synthetic base
+        // (e.g. {}, [], function() {}), otherwise use the identifier
+        // from the current scope.
+        let base_expr = if self.rng.random_bool(0.5) {
+            base
+        } else {
+            self.build_synthetic_base()
+        };
+
         let member_ident = IdentName::new(Atom::from(sig.name), DUMMY_SP);
         let callee_expr = Expr::Member(MemberExpr {
             span: DUMMY_SP,
-            obj: Box::new(base),
+            obj: Box::new(base_expr),
             prop: MemberProp::Ident(member_ident),
         });
 
@@ -337,7 +365,17 @@ impl MethodCallVisitor {
 }
 
 impl VisitMut for MethodCallVisitor {
+    for_stmt_visitor!(mut);
+
     fn visit_mut_expr(&mut self, node: &mut Expr) {
+        // Avoid modifying expressions that are part of for-loop headers
+        // (init / test / update), as those are a common source of timeouts
+        // when aggressively mutated.
+        if self.in_for_stmt.is_some() {
+            node.visit_mut_children_with(self);
+            return;
+        }
+
         if self.replaced {
             node.visit_mut_children_with(self);
             return;
@@ -349,6 +387,7 @@ impl VisitMut for MethodCallVisitor {
             if idx == self.target_idx {
                 let base = Expr::Ident(ident.clone());
                 let call_expr = self.build_method_call(base);
+
                 *node = call_expr;
                 self.replaced = true;
                 return;
@@ -370,6 +409,56 @@ impl AstMutator for MethodCallMutator {
             let mut visitor = MethodCallVisitor::new(rng, target_idx);
             ast.visit_mut_with(&mut visitor);
         }
+        Ok(ast)
+    }
+}
+
+
+/// Removes an element accessor from an expression like `obj[index]` or `obj.prop`,
+/// converting it back to a simple identifier `obj`.
+pub struct RemovePropMutator;
+impl AstMutator for RemovePropMutator {
+    fn mutate(&self, mut ast: Script) -> Result<Script> {
+        struct RemovePropVisitor {
+            counter_mode: bool,
+            counter: usize,
+            idx_to_remove: usize,
+        }
+
+        impl VisitMut for RemovePropVisitor {
+            fn visit_mut_expr(&mut self, node: &mut Expr) {
+                if let Expr::Member(MemberExpr { obj, .. }) = node {
+                    if let Expr::Ident(_) = **obj {
+                        self.counter += 1;
+                        if !self.counter_mode && self.counter == self.idx_to_remove {
+                            // Replace the member expression with its base identifier.
+                            *node = *obj.clone();
+                            return;
+                        }
+                    }
+                }
+                node.visit_mut_children_with(self);
+            }
+        }
+
+        let mut collector = RemovePropVisitor {
+            counter_mode: true,
+            counter: 0,
+            idx_to_remove: 0,
+        };
+        ast.visit_mut_with(&mut collector);
+
+        if collector.counter == 0 {
+            return Ok(ast);
+        }
+
+        let mut remover = RemovePropVisitor {
+            counter_mode: false,
+            counter: 0,
+            idx_to_remove: rand::rng().random_range(0..collector.counter),
+        };
+        ast.visit_mut_with(&mut remover);
+
         Ok(ast)
     }
 }

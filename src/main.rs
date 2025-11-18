@@ -253,11 +253,11 @@ async fn ingest_initial_corpus(
                 }
             };
             
-            let exec_time = exec_start.elapsed().as_millis() as u64;
-            if job_result.status_code != 0 {
-                skipped_clone.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
+            let exec_time = exec_start.elapsed();
+            // if job_result.status_code != 0 {
+            //     skipped_clone.fetch_add(1, Ordering::Relaxed);
+            //     return;
+            // }
             
             let reward = compute_reward(&job_result);
             let mut manager = corpus_manager_clone.lock().await;
@@ -292,6 +292,7 @@ async fn ingest_initial_corpus(
                 }
             }
             println!("Ingested {} files...", processed_now);
+            break; // TODO: remove this break
         }
     }
     
@@ -367,18 +368,31 @@ async fn run_fuzz_loop(
         };
         
         let mutator = get_weighted_mutator_choice(mutators);
-        let mutated_ast = match mutator.mutate(seed_script) {
-            Ok(ast) => ast,
-            Err(err) => {
-                eprintln!(
-                    "Mutator {} failed on {:?}: {:?}",
-                    mutator.name(),
-                    selection.path,
-                    err
-                );
-                continue;
+        
+        let mutated_ast = match mutator.is_splicer() {
+            true => {
+                let donor = {
+                    let mut mgr = corpus_manager.lock().await;
+                    mgr.get_random_script().await
+                };
+                let donor = match donor {
+                    Ok(Some(script)) => script,
+                    Ok(None) => {
+                        eprintln!("No donor script available for splicing");
+                        continue;
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to get donor script for splicing: {:?}", err);
+                        continue;
+                    }
+                };
+                mutator.splice(&seed_script, &donor).expect("splicing failed")
+            },
+            false => {
+                mutator.mutate(seed_script).expect("mutation failed")
             }
         };
+        
         
         let mutated_code = match generate_js(mutated_ast) {
             Ok(code) => code,
@@ -419,7 +433,7 @@ async fn run_fuzz_loop(
             {
                 let mut mgr = corpus_manager.lock().await;
                 // Update stats for the original corpus entry.
-                mgr.record_result(selection.id, reward, 0)
+                mgr.record_result(selection.id, reward, job_result.exec_time_ms)
                 .await
                 .unwrap_or(());
                 // Persist timeouts into corpus/timeouts for later triage.
@@ -429,7 +443,7 @@ async fn run_fuzz_loop(
                         &mutated_code,
                         Vec::new(),
                         0.0,
-                        0,
+                        job_result.exec_time_ms,
                         true,
                     )
                     .await;
@@ -468,7 +482,7 @@ async fn run_fuzz_loop(
                         &mutated_code,
                         job_result.edge_hits.clone(),
                         reward.max(0.0),
-                        0,
+                        job_result.exec_time_ms,
                         job_result.is_timeout,
                     )
                     .await
@@ -608,7 +622,7 @@ async fn single_test(script_path: &str, profile: &str) {
                         &js_code,
                         job_result.edge_hits.clone(),
                         1.0,
-                        0,
+                        job_result.exec_time_ms,
                         job_result.is_timeout,
                     )
                     .await
@@ -730,17 +744,42 @@ mod tests {
         let mutated_ast = minifier.mutate(ast).expect("minification failed");
         let mutated_code = generate_js(mutated_ast).expect("code generation failed");
         let mut result_rx = pool
-            .schedule_job(mutated_code.clone())
-            .await
-            .expect("failed to schedule job");
+        .schedule_job(mutated_code.clone())
+        .await
+        .expect("failed to schedule job");
         let job_result = result_rx
-            .recv()
-            .await
-            .expect("failed to receive job result")
-            .expect("job execution failed");
+        .recv()
+        .await
+        .expect("failed to receive job result")
+        .expect("job execution failed");
         println!(
             "Single script test result: exit {}, signal {}, timeout {}, new coverage {}",
             job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage
         );
+    }
+    
+    #[tokio::test(flavor = "multi_thread")]
+    async fn print_ast() {
+        let script_path = "./test_out.js";
+        let source = fs::read_to_string(script_path).expect("failed to read test script");
+        let ast = parse_js(source).expect("failed to parse test script");
+        println!("{:#?}", ast);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_mutator() {
+        let script_path = "./test.js";
+        let source = fs::read_to_string(script_path).expect("failed to read test script");
+        let ast = parse_js(source.clone()).expect("failed to parse test script");
+        // let minifier = Minifier;
+        // let mutated_ast = minifier.mutate(ast).expect("minification failed");
+        
+        let mutator = get_mutator_by_name("IdentSwapMutator").expect("unknown mutator");
+        let mutated_ast = mutator.mutate(ast).expect("mutation failed");
+        let mutated_code = generate_js(mutated_ast).expect("code generation failed");
+
+        println!("Original code:\n{}", source);
+        println!("-----------------------------------");
+        println!("Mutated code:\n{}", String::from_utf8_lossy(mutated_code.as_slice()));
     }
 }

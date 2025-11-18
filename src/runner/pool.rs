@@ -4,6 +4,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::yield_now;
@@ -53,6 +54,7 @@ pub struct JobResult {
     pub edge_hits: Vec<u32>,
     pub is_crash: bool,
     pub is_timeout: bool,
+    pub exec_time_ms: Duration,
     // pub edge_hash: Option<Vec
 }
 
@@ -201,6 +203,7 @@ impl<T: JsEngineProfile + Clone + Send + Sync + 'static> FuzzWorker<T> {
                 edge_hits: Vec::new(),
                 is_crash: false,
                 is_timeout: true,
+                exec_time_ms: Duration::from_millis(100000),
             });
         }
         
@@ -238,29 +241,34 @@ impl<T: JsEngineProfile + Clone + Send + Sync + 'static> FuzzWorker<T> {
                 }
             }
         }
-        let (status_code, signal, is_crash) = match exec_status {
-            Ok(status) => (status.exit_code, status.signal, false),
+        let (status_code, signal, is_crash, exec_time_ms) = match exec_status {
+            Ok(status) => (status.exit_code, status.signal, false, status.exec_time_ms),
             Err(err) => {
                 if err.kind() == io::ErrorKind::TimedOut {
-                    (-1, 0, false)
+                    (-1, 0, false, Duration::from_millis(0))
                 } else {
                     println!("code: {:?}", js_code);
                     println!("Execution error: {:?}", err);
-                    (-1, -1, true)
+                    (-1, -1, true, Duration::from_millis(0))
                 }
             }
         };
         if is_crash {
             self.restart()?;
         }
-        let job_result = JobResult {
+        let mut job_result = JobResult {
             status_code,
             signal,
             new_coverage: if timed_out { false } else { new_cov_flag },
             edge_hits: if timed_out { Vec::new() } else { edge_hits },
             is_crash,
             is_timeout: timed_out,
+            exec_time_ms,
         };
+        if job_result.edge_hits.len() < self.profile.get_min_new_edges_to_add_corpus() {
+            job_result.new_coverage = false;
+            job_result.edge_hits.clear();
+        }
         Ok(job_result)
     }
     
