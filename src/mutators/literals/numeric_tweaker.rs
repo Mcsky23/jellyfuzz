@@ -6,6 +6,7 @@ use swc_ecma_visit::{Visit, VisitMut, VisitMutWith};
 use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
 use crate::mutators::AstMutator;
+use crate::mutators::scope::CountNumericLiterals;
 use crate::utils::rand_utils::{random_weighted_choice, small_delta};
 
 /// NumericTweaker
@@ -17,7 +18,7 @@ struct NumericTweakerVisitor {
     rng: rand::rngs::ThreadRng,
     idx_to_mutate: usize,
     crt_idx: usize,
-    in_for_stmt: Option<&'static str>, // know if I'm visitng the literals of the init/test/update of a for statement
+    in_for_stmt: Option<&'static str>, // know if I'm visiting the literals of the init/test/update of a for statement
     in_array_index: bool,              // true while visiting a computed member index, e.g. arr[<here>]
 }
 
@@ -108,18 +109,6 @@ impl NumericTweakerVisitor {
     }
 }
 
-struct CountNumericLiterals {
-    pub count: usize,
-}
-impl Visit for CountNumericLiterals {
-    fn visit_lit(&mut self, node: &Lit) {
-        if let Lit::Num(_) = node {
-            self.count += 1;
-        }
-        node.visit_children_with(self);
-    }
-}
-
 impl VisitMut for NumericTweakerVisitor {
     fn visit_mut_for_stmt(&mut self, node: &mut ForStmt) {
         let prev_in_for = self.in_for_stmt;
@@ -176,10 +165,7 @@ impl VisitMut for NumericTweakerVisitor {
             let original = num_lit.value;
             let mut new_value = original;
 
-            // For loop headers are particularly sensitive to large numeric
-            // changes: they easily turn into long‑running or even non‑
-            // terminating loops. For those, perform only small, bounded
-            // tweaks.
+            // Special handling for for loops
             if let Some(ctx) = self.in_for_stmt {
                 match ctx {
                     // Be conservative for init/update: they influence trip count
@@ -300,7 +286,7 @@ impl VisitMut for NumericTweakerVisitor {
                     ("random_fraction", 8),
                     ("scale_mult", 8),
                     ("to_neg_zero", 5),
-                    ("pow2", 4),
+                    // ("pow2", 4),
                     ("to_extreme_large", 3),
                     ("to_extreme_small", 3),
                     ("to_nan", 2),
@@ -422,225 +408,5 @@ impl AstMutator for NumericTweaker {
 impl NumericTweaker {
     pub fn new() -> Self {
         Self
-    }
-}
-
-// ====================================================================================================
-//
-/// BoleanFlipper
-/// Flips boolean literals (true -> false, false -> true)
-pub struct BooleanFlipper;
-pub struct BooleanFlipperVisitor {
-    idx_to_mutate: usize,
-    crt_idx: usize,
-}
-pub struct CountBooleanLiterals {
-    pub count: usize,
-}
-
-impl Visit for CountBooleanLiterals {
-    fn visit_lit(&mut self, node: &Lit) {
-        if let Lit::Bool(_) = node {
-            self.count += 1;
-        }
-        node.visit_children_with(self);
-    }
-}
-
-impl VisitMut for BooleanFlipperVisitor {
-    fn visit_mut_lit(&mut self, node: &mut Lit) {
-        node.visit_mut_children_with(self);
-
-        if let Lit::Bool(bool_lit) = node {
-            if self.crt_idx != self.idx_to_mutate {
-                self.crt_idx += 1;
-                return;
-            }
-            self.crt_idx += 1;
-
-            bool_lit.value = !bool_lit.value;
-        }
-    }
-}
-
-impl AstMutator for BooleanFlipper {
-    fn mutate(&self, mut ast: Script) -> Result<Script> {
-        let mut counter = CountBooleanLiterals { count: 0 };
-        ast.visit_with(&mut counter);
-        if counter.count == 0 {
-            // No boolean literals to mutate
-            return Ok(ast);
-        }
-
-        // randomly choose a literal index to mutate
-        let mut rng = rand::rng();
-        let idx_to_mutate = rng.random_range(0..counter.count);
-        let mut visitor = BooleanFlipperVisitor {
-            idx_to_mutate,
-            crt_idx: 0,
-        };
-        ast.visit_mut_with(&mut visitor);
-        Ok(ast)
-    }
-}
-
-// ====================================================================================================
-//
-/// ArrayLengthMutator
-/// Mutates array literals by changing their lengths
-/// E.g., [1,2,3] -> [1,2,3,undefined,undefined] or [1]
-pub struct ArrayLengthMutator;
-pub struct ArrayLengthMutatorVisitor {
-    rng: rand::rngs::ThreadRng,
-    idx_to_mutate: usize,
-    crt_idx: usize,
-}
-pub struct CountArrayLiterals {
-    pub count: usize,
-}
-
-impl Visit for CountArrayLiterals {
-    fn visit_array_lit(&mut self, node: &ArrayLit) {
-        self.count += 1;
-        node.visit_children_with(self);
-    }
-}
-
-impl VisitMut for ArrayLengthMutatorVisitor {
-    fn visit_mut_array_lit(&mut self, node: &mut ArrayLit) {
-        node.visit_mut_children_with(self);
-
-        if self.crt_idx != self.idx_to_mutate {
-            self.crt_idx += 1;
-            return;
-        }
-        self.crt_idx += 1;
-
-        let original_len = node.elems.len();
-        let mut rng = rand::rng();
-        let new_len = if rng.random_bool(0.5) {
-            // increase length
-            original_len + rng.random_range(1..=5)
-        } else {
-            // decrease length
-            if original_len == 0 {
-                0
-            } else {
-                rng.random_range(0..original_len)
-            }
-        };
-
-        if new_len > original_len {
-            // add undefined elements
-            // decide what type of elements to add
-            let choice = random_weighted_choice(
-                &mut self.rng,
-                &[
-                    ("smi", 30),
-                    ("float", 20),
-                    ("bigint", 20),
-                    ("nan", 5),
-                    ("null", 5),
-                    ("undefined", 5),
-                    ("boolean", 5),
-                    ("objects", 10),
-                ],
-            );
-            match choice {
-                "smi" => {
-                    for _ in original_len..new_len {
-                        let val = rng.random_range(-100i32..=100i32);
-                        let lit = Lit::Num(Number {
-                            span: Default::default(),
-                            value: val as f64,
-                            raw: Some(Atom::from(val.to_string().as_str())),
-                        });
-                        node.elems.push(Some(ExprOrSpread {
-                            spread: None,
-                            expr: Box::new(Expr::Lit(lit)),
-                        }));
-                    }
-                }
-                "float" => {
-                    for _ in original_len..new_len {
-                        let val = rng.random_range(-100.0f64..=100.0f64);
-                        let lit = Lit::Num(Number {
-                            span: Default::default(),
-                            value: val,
-                            raw: Some(Atom::from(format!("{:.2}", val).as_str())),
-                        });
-                        node.elems.push(Some(ExprOrSpread {
-                            spread: None,
-                            expr: Box::new(Expr::Lit(lit)),
-                        }));
-                    }
-                }
-                "nan" => {
-                    for _ in original_len..new_len {
-                        let lit = Lit::Num(Number {
-                            span: Default::default(),
-                            value: f64::NAN,
-                            raw: Some(Atom::from("NaN")),
-                        });
-                        node.elems.push(Some(ExprOrSpread {
-                            spread: None,
-                            expr: Box::new(Expr::Lit(lit)),
-                        }));
-                    }
-                }
-                "undefined" => {
-                    for _ in original_len..new_len {
-                        let lit = Expr::Ident(Ident {
-                            span: Default::default(),
-                            sym: Atom::from("undefined"),
-                            optional: false,
-                            ctxt: Default::default(),
-                        });
-                        node.elems.push(Some(ExprOrSpread {
-                            spread: None,
-                            expr: Box::new(lit),
-                        }));
-                    }
-                }
-                _ => {
-                    for _ in original_len..new_len {
-                        let lit = Expr::Ident(Ident {
-                            span: Default::default(),
-                            sym: Atom::from("undefined"),
-                            optional: false,
-                            ctxt: Default::default(),
-                        });
-                        node.elems.push(Some(ExprOrSpread {
-                            spread: None,
-                            expr: Box::new(lit),
-                        }));
-                    }
-                }
-            }
-        } else if new_len < original_len {
-            node.elems.truncate(new_len);
-        }
-    }
-}
-
-impl AstMutator for ArrayLengthMutator {
-    fn mutate(&self, mut ast: Script) -> Result<Script> {
-        let mut counter = CountArrayLiterals { count: 0 };
-        ast.visit_with(&mut counter);
-        if counter.count == 0 {
-            // No array literals to mutate
-            return Ok(ast);
-        }
-
-        // randomly choose a literal index to mutate
-        let mut rng = rand::rng();
-        let idx_to_mutate = rng.random_range(0..counter.count);
-        let mut visitor = ArrayLengthMutatorVisitor {
-            rng,
-            idx_to_mutate,
-            crt_idx: 0,
-        };
-        ast.visit_mut_with(&mut visitor);
-        Ok(ast)
     }
 }

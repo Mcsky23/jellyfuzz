@@ -199,7 +199,7 @@ async fn ingest_initial_corpus(
         let script = match parse_js(source_str) {
             Ok(script) => script,
             Err(err) => {
-                eprintln!("Failed to parse {:?}: {:?}", path, err);
+                // eprintln!("Failed to parse {:?}: {:?}", path, err);
                 skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -756,30 +756,5 @@ mod tests {
             "Single script test result: exit {}, signal {}, timeout {}, new coverage {}",
             job_result.status_code, job_result.signal, job_result.is_timeout, job_result.new_coverage
         );
-    }
-    
-    #[tokio::test(flavor = "multi_thread")]
-    async fn print_ast() {
-        let script_path = "./test_out.js";
-        let source = fs::read_to_string(script_path).expect("failed to read test script");
-        let ast = parse_js(source).expect("failed to parse test script");
-        println!("{:#?}", ast);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_mutator() {
-        let script_path = "./test.js";
-        let source = fs::read_to_string(script_path).expect("failed to read test script");
-        let ast = parse_js(source.clone()).expect("failed to parse test script");
-        // let minifier = Minifier;
-        // let mutated_ast = minifier.mutate(ast).expect("minification failed");
-        
-        let mutator = get_mutator_by_name("IdentSwapMutator").expect("unknown mutator");
-        let mutated_ast = mutator.mutate(ast).expect("mutation failed");
-        let mutated_code = generate_js(mutated_ast).expect("code generation failed");
-
-        println!("Original code:\n{}", source);
-        println!("-----------------------------------");
-        println!("Mutated code:\n{}", String::from_utf8_lossy(mutated_code.as_slice()));
     }
 }

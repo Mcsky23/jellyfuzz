@@ -1,4 +1,4 @@
-use std::process::exit;
+use std::mem;
 
 use rand::Rng;
 use rand::seq::IndexedRandom;
@@ -8,7 +8,7 @@ use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
 use crate::mutators::AstMutator;
 use crate::mutators::scope::{
-    ScopeKind, ScopeStack, ScopedAstVisitor, extend_params_from_fn_params, for_stmt_visitor, scoped_visit_mut_methods
+    ScopeState, ScopedAstVisitor, for_stmt_visitor, scoped_for_stmt_visitor, scoped_visit_mut_methods,
 };
 
 const FUNCTION_REPLACEMENT_PROBABILITY: f64 = 0.1;
@@ -65,22 +65,16 @@ struct ExpressionSwapDupVisitor {
     current_idx: usize,
     swap_state: Option<SwapState>,
     dup_state: Option<DupState>,
-    scopes: ScopeStack,
-    pending_function_names: Vec<Option<Ident>>,
-    in_for_stmt: Option<&'static str>,
+    scope_state: ScopeState,
 }
 
 impl ScopedAstVisitor for ExpressionSwapDupVisitor {
-    fn scope_stack(&mut self) -> &mut ScopeStack {
-        &mut self.scopes
-    }
-
-    fn pending_function_names(&mut self) -> &mut Vec<Option<Ident>> {
-        &mut self.pending_function_names
+    fn scope_state(&mut self) -> &mut ScopeState {
+        &mut self.scope_state
     }
 
     fn on_fn_decl_ident(&mut self, ident: &Ident) {
-        self.scopes.add_function_to_hoist(ident.clone());
+        self.scope_stack().add_function_to_hoist(ident.clone());
     }
 }
 
@@ -96,9 +90,7 @@ impl ExpressionSwapDupVisitor {
             current_idx: 0,
             swap_state,
             dup_state,
-            scopes: ScopeStack::new(),
-            pending_function_names: Vec::new(),
-            in_for_stmt: None
+            scope_state: ScopeState::new(),
         }
     }
 
@@ -107,7 +99,7 @@ impl ExpressionSwapDupVisitor {
             return None;
         }
 
-        let candidates = self.scopes.collect_functions();
+        let candidates = self.scope_stack().collect_functions();
 
         if candidates.is_empty() {
             return None;
@@ -123,7 +115,7 @@ impl ExpressionSwapDupVisitor {
 
         if self.rng.random_bool(0.5) {
             let candidates: Vec<Expr> = self
-                .scopes
+                .scope_stack()
                 .collect_idents_and_functions()
                 .into_iter()
                 .map(Expr::Ident)
@@ -134,17 +126,20 @@ impl ExpressionSwapDupVisitor {
             return candidates.choose(&mut self.rng).cloned();
         }
 
-        self.scopes.choose_expr(&mut self.rng)
+        let mut rng = mem::take(&mut self.rng);
+        let choice = self.scope_stack().choose_expr(&mut rng);
+        self.rng = rng;
+        choice
     }
 }
 
 impl VisitMut for ExpressionSwapDupVisitor {
     scoped_visit_mut_methods!();
-    for_stmt_visitor!(mut);
+    scoped_for_stmt_visitor!(mut);
 
     fn visit_mut_expr(&mut self, node: &mut Expr) {
 
-        if self.in_for_stmt.is_some() {
+        if self.in_for_stmt().is_some() {
             node.visit_mut_children_with(self);
             return;
         }
@@ -186,7 +181,7 @@ impl VisitMut for ExpressionSwapDupVisitor {
                     }
                 }
 
-                self.scopes.add_expr_candidate(node.clone());
+                self.scope_stack().add_expr_candidate(node.clone());
             }
             Mode::Dup => {
                 let (idx_to_replace, already_replaced) =
@@ -201,14 +196,14 @@ impl VisitMut for ExpressionSwapDupVisitor {
 
                 if already_replaced {
                     node.visit_mut_children_with(self);
-                    self.scopes.add_expr_candidate(node.clone());
+                    self.scope_stack().add_expr_candidate(node.clone());
                     return;
                 }
 
                 let mut did_replace = false;
                 if idx == idx_to_replace {
                     if let Some(mut replacement) = self.pick_replacement() {
-                        let candidates = self.scopes.collect_idents_and_functions();
+                        let candidates = self.scope_stack().collect_idents_and_functions();
                         swap_idents_in_expr(&mut replacement, &mut self.rng, &candidates);
                         *node = replacement;
                         did_replace = true;
@@ -216,7 +211,7 @@ impl VisitMut for ExpressionSwapDupVisitor {
                 }
 
                 node.visit_mut_children_with(self);
-                self.scopes.add_expr_candidate(node.clone());
+                self.scope_stack().add_expr_candidate(node.clone());
 
                 if did_replace {
                     if let Some(state) = self.dup_state.as_mut() {
@@ -227,28 +222,6 @@ impl VisitMut for ExpressionSwapDupVisitor {
         }
     }
 
-    fn visit_mut_function(&mut self, node: &mut Function) {
-        let fn_name = self.pending_function_names.pop().flatten();
-
-        self.scopes.push_scope(ScopeKind::Function);
-
-        if let Some(name) = fn_name.clone() {
-            self.scopes.add_ident_to_current(name.clone());
-            self.scopes.add_function_to_current(name);
-        }
-
-        extend_params_from_fn_params(&mut self.scopes, &node.params);
-
-        for param in &mut node.params {
-            param.visit_mut_with(self);
-        }
-
-        if let Some(body) = &mut node.body {
-            body.visit_mut_with(self);
-        }
-
-        self.scopes.pop_scope();
-    }
 }
 
 /// Swap identifiers in the given expression with other compatible identifiers from the candidates list
@@ -417,4 +390,3 @@ impl AstMutator for IdentSwapMutator {
     }
 
 }
-

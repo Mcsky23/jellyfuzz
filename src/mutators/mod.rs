@@ -4,8 +4,8 @@ pub mod literals;
 pub mod minifier;
 pub mod operators;
 pub mod scope;
-pub mod js_types;
 pub mod splice;
+pub mod js_objects;
 
 use std::sync::{Arc, Mutex};
 
@@ -111,17 +111,22 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
     vec![
         Arc::new(ManagedMutator::new(
             "NumericTweaker",
-            Box::new(literals::NumericTweaker::new()),
+            Box::new(literals::numeric_tweaker::NumericTweaker::new()),
             false,
         )),
         Arc::new(ManagedMutator::new(
             "BooleanFlipper",
-            Box::new(literals::BooleanFlipper {}),
+            Box::new(literals::boolean_flipper::BooleanFlipper {}),
             false,
         )),
         Arc::new(ManagedMutator::new(
-            "ArrayLengthMutator",
-            Box::new(literals::ArrayLengthMutator {}),
+            "ArrayMutator",
+            Box::new(literals::array_mutator::ArrayMutator {}),
+            false,
+        )),
+        Arc::new(ManagedMutator::new(
+            "ConstructorCall",
+            Box::new(literals::constructor_call::ConstructorCall {}),
             false,
         )),
         Arc::new(ManagedMutator::new(
@@ -191,4 +196,36 @@ pub fn get_weighted_mutator_choice(
         choices.push((m.clone(), weight));
     }
     random_weighted_choice(&mut rand::rng(), &choices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsing::parser::*;
+    use std::fs;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn print_ast() {
+        let script_path = "./test_out.js";
+        let source = fs::read_to_string(script_path).expect("failed to read test script");
+        let ast = parse_js(source).expect("failed to parse test script");
+        println!("{:#?}", ast);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_mutator() {
+        let script_path = "./test_out.js";
+        let source = fs::read_to_string(script_path).expect("failed to read test script");
+        let ast = parse_js(source.clone()).expect("failed to parse test script");
+        // let minifier = Minifier;
+        // let mutated_ast = minifier.mutate(ast).expect("minification failed");
+        
+        let mutator = get_mutator_by_name("ConstructorCall").expect("unknown mutator");
+        let mutated_ast = mutator.mutate(ast).expect("mutation failed");
+        let mutated_code = generate_js(mutated_ast).expect("code generation failed");
+
+        println!("Original code:\n{}", source);
+        println!("-----------------------------------");
+        println!("Mutated code:\n{}", String::from_utf8_lossy(mutated_code.as_slice()));
+    }
 }

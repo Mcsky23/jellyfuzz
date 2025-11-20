@@ -158,6 +158,28 @@ impl ScopeStack {
     }
 }
 
+pub struct ScopeState {
+    pub scopes: ScopeStack,
+    pending_function_names: Vec<Option<Ident>>,
+    in_for_stmt: Option<&'static str>,
+}
+
+impl Default for ScopeState {
+    fn default() -> Self {
+        Self {
+            scopes: ScopeStack::new(),
+            pending_function_names: Vec::new(),
+            in_for_stmt: None,
+        }
+    }
+}
+
+impl ScopeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Recursively walk patterns and collect all binding identifiers.
 pub fn collect_binding_idents_from_pat(pat: &Pat, out: &mut Vec<Ident>) {
     match pat {
@@ -211,8 +233,23 @@ pub fn extend_params_from_fn_params(scopes: &mut ScopeStack, params: &[Param]) {
 }
 
 pub trait ScopedAstVisitor: VisitMut {
-    fn scope_stack(&mut self) -> &mut ScopeStack;
-    fn pending_function_names(&mut self) -> &mut Vec<Option<Ident>>;
+    fn scope_state(&mut self) -> &mut ScopeState;
+
+    fn scope_stack(&mut self) -> &mut ScopeStack {
+        &mut self.scope_state().scopes
+    }
+
+    fn pending_function_names(&mut self) -> &mut Vec<Option<Ident>> {
+        &mut self.scope_state().pending_function_names
+    }
+
+    fn in_for_stmt(&mut self) -> Option<&'static str> {
+        self.scope_state().in_for_stmt
+    }
+
+    fn set_in_for_stmt(&mut self, state: Option<&'static str>) {
+        self.scope_state().in_for_stmt = state;
+    }
 
     fn on_fn_decl_ident(&mut self, _ident: &Ident) {}
     fn on_fn_expr_ident(&mut self, _ident: &Option<Ident>) {}
@@ -225,6 +262,29 @@ pub trait ScopedAstVisitor: VisitMut {
             scopes.push_scope(ScopeKind::Block);
         }
         node.visit_mut_children_with(self);
+        self.scope_stack().pop_scope();
+    }
+
+    fn visit_function_scoped(&mut self, node: &mut Function) {
+        let fn_name = self.pending_function_names().pop().flatten();
+
+        self.scope_stack().push_scope(ScopeKind::Function);
+
+        if let Some(name) = fn_name.clone() {
+            self.scope_stack().add_ident_to_current(name.clone());
+            self.scope_stack().add_function_to_current(name);
+        }
+
+        extend_params_from_fn_params(self.scope_stack(), &node.params);
+
+        for param in &mut node.params {
+            param.visit_mut_with(self);
+        }
+
+        if let Some(body) = &mut node.body {
+            body.visit_mut_with(self);
+        }
+
         self.scope_stack().pop_scope();
     }
 
@@ -366,6 +426,10 @@ macro_rules! scoped_visit_mut_methods {
         fn visit_mut_class_expr(&mut self, node: &mut ClassExpr) {
             self.visit_class_expr_scoped(node);
         }
+
+        fn visit_mut_function(&mut self, node: &mut Function) {
+            self.visit_function_scoped(node);
+        }
     };
 }
 pub(crate) use scoped_visit_mut_methods;
@@ -416,6 +480,32 @@ macro_rules! for_stmt_visitor {
 }
 pub(crate) use for_stmt_visitor;
 
+/// Scoped variant that relies on the helper methods provided by `ScopedAstVisitor`
+/// instead of a raw `in_for_stmt` field.
+macro_rules! scoped_for_stmt_visitor {
+    (mut) => {
+        fn visit_mut_for_stmt(&mut self, node: &mut ForStmt) {
+            let prev_in_for = self.in_for_stmt();
+            if let Some(init) = &mut node.init {
+                self.set_in_for_stmt(Some("init"));
+                init.visit_mut_with(self);
+            }
+            if let Some(test) = &mut node.test {
+                self.set_in_for_stmt(Some("test"));
+                test.visit_mut_with(self);
+            }
+            if let Some(update) = &mut node.update {
+                self.set_in_for_stmt(Some("update"));
+                update.visit_mut_with(self);
+            }
+            self.set_in_for_stmt(None);
+            node.body.visit_mut_with(self);
+            self.set_in_for_stmt(prev_in_for);
+        }
+    };
+}
+pub(crate) use scoped_for_stmt_visitor;
+
 use swc_ecma_visit::*;
 /// Collects all variable and function names in the AST.
 pub struct NameCollector {
@@ -429,6 +519,36 @@ impl NameCollector {
             var_names: HashSet::new(),
             func_names: HashSet::new(),
         }
+    }
+}
+
+/// Collects all idents in an AST
+#[derive(Default)]
+pub struct IdentCollector {
+    pub idents: Vec<Ident>,
+    pub in_for_stmt: Option<&'static str>,
+}
+
+impl Visit for IdentCollector {
+    for_stmt_visitor!();
+
+    fn visit_expr(&mut self, node: &Expr) {
+        if let Expr::Ident(ident) = node {
+            self.idents.push(ident.clone());
+        }
+        node.visit_children_with(self);
+    }
+}
+
+pub struct CountNumericLiterals {
+    pub count: usize,
+}
+impl Visit for CountNumericLiterals {
+    fn visit_lit(&mut self, node: &Lit) {
+        if let Lit::Num(_) = node {
+            self.count += 1;
+        }
+        node.visit_children_with(self);
     }
 }
 

@@ -7,10 +7,10 @@ use swc_ecma_visit::{Visit, VisitMut, VisitMutWith};
 use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
 use crate::mutators::AstMutator;
+use crate::mutators::js_objects::js_types::{JsObjectType, STATIC_PROPERTIES, StaticPropertySig, get_property_list};
 use crate::mutators::scope::{
-    ScopeKind, ScopeStack, ScopedAstVisitor, extend_params_from_fn_params, for_stmt_visitor, scoped_visit_mut_methods
+    IdentCollector, ScopeState, ScopedAstVisitor, for_stmt_visitor, scoped_for_stmt_visitor, scoped_visit_mut_methods
 };
-use crate::mutators::js_types::*;
 
 pub struct ElementAccessorMutator;
 pub struct MethodCallMutator;
@@ -28,40 +28,17 @@ fn number_expr(value: f64) -> Expr {
     }))
 }
 
-#[derive(Default)]
-struct IdentCollector {
-    idents: Vec<Ident>,
-    in_for_stmt: Option<&'static str>,
-}
-
-impl Visit for IdentCollector {
-    for_stmt_visitor!();
-
-    fn visit_expr(&mut self, node: &Expr) {
-        if let Expr::Ident(ident) = node {
-            self.idents.push(ident.clone());
-        }
-        node.visit_children_with(self);
-    }
-}
-
 struct ElementAccessorVisitor {
     rng: rand::rngs::ThreadRng,
     target_idx: usize,
     current_idx: usize,
     replaced: bool,
-    scopes: ScopeStack,
-    pending_function_names: Vec<Option<Ident>>,
-    in_for_stmt: Option<&'static str>,
+    scope_state: ScopeState,
 }
 
 impl ScopedAstVisitor for ElementAccessorVisitor {
-    fn scope_stack(&mut self) -> &mut ScopeStack {
-        &mut self.scopes
-    }
-
-    fn pending_function_names(&mut self) -> &mut Vec<Option<Ident>> {
-        &mut self.pending_function_names
+    fn scope_state(&mut self) -> &mut ScopeState {
+        &mut self.scope_state
     }
 }
 
@@ -72,14 +49,12 @@ impl ElementAccessorVisitor {
             target_idx,
             current_idx: 0,
             replaced: false,
-            scopes: ScopeStack::new(),
-            pending_function_names: Vec::new(),
-            in_for_stmt: None,
+            scope_state: ScopeState::new(),
         }
     }
 
     fn pick_scope_ident(&mut self) -> Option<Ident> {
-        let candidates = self.scopes.collect_idents();
+        let candidates = self.scope_stack().collect_idents();
         candidates.choose(&mut self.rng).cloned()
     }
 
@@ -149,10 +124,10 @@ impl ElementAccessorVisitor {
 
 impl VisitMut for ElementAccessorVisitor {
     scoped_visit_mut_methods!();
-    for_stmt_visitor!(mut);
+    scoped_for_stmt_visitor!(mut);
 
     fn visit_mut_expr(&mut self, node: &mut Expr) {
-        if self.in_for_stmt.is_some() {
+        if self.in_for_stmt().is_some() {
             node.visit_mut_children_with(self);
             return;
         }
@@ -178,28 +153,6 @@ impl VisitMut for ElementAccessorVisitor {
         }
 
         node.visit_mut_children_with(self);
-    }
-
-    fn visit_mut_function(&mut self, node: &mut Function) {
-        let fn_name = self.pending_function_names.pop().flatten();
-
-        self.scopes.push_scope(ScopeKind::Function);
-
-        if let Some(name) = fn_name.clone() {
-            self.scopes.add_ident_to_current(name);
-        }
-
-        extend_params_from_fn_params(&mut self.scopes, &node.params);
-
-        for param in &mut node.params {
-            param.visit_mut_with(self);
-        }
-
-        if let Some(body) = &mut node.body {
-            body.visit_mut_with(self);
-        }
-
-        self.scopes.pop_scope();
     }
 }
 
@@ -284,13 +237,13 @@ impl MethodCallVisitor {
         }
     }
 
-    fn build_arg_expr(&mut self, ty: ObjectType) -> Expr {
+    fn build_arg_expr(&mut self, ty: JsObjectType) -> Expr {
         match ty {
-            ObjectType::Number => {
+            JsObjectType::Number => {
                 let v = self.rng.random_range(-100i32..=100i32) as f64;
                 number_expr(v)
             }
-            ObjectType::String => {
+            JsObjectType::JsString => {
                 let choices = ["foo", "bar", "baz", "qux"];
                 let s = choices
                     .choose(&mut self.rng)
@@ -298,18 +251,18 @@ impl MethodCallVisitor {
                     .unwrap_or("s");
                 string_expr_from_atom(s)
             }
-            ObjectType::Object => Expr::Object(ObjectLit {
+            JsObjectType::Object => Expr::Object(ObjectLit {
                 span: DUMMY_SP,
                 props: Vec::new(),
             }),
-            ObjectType::Function => empty_function_expr(),
-            ObjectType::Any => {
+            JsObjectType::Function => empty_function_expr(),
+            JsObjectType::Any => {
                 // Pick a concrete type for Any.
                 let concrete = match self.rng.random_range(0..4) {
-                    0 => ObjectType::Number,
-                    1 => ObjectType::String,
-                    2 => ObjectType::Object,
-                    _ => ObjectType::Function,
+                    0 => JsObjectType::Number,
+                    1 => JsObjectType::JsString,
+                    2 => JsObjectType::Object,
+                    _ => JsObjectType::Function,
                 };
                 self.build_arg_expr(concrete)
             }
