@@ -36,5 +36,11 @@ pub fn generate_js(script: Script) -> anyhow::Result<Vec<u8>> {
         wr,
     };
     emitter.emit_script(&script)?;
+
+    // support natives syntax
+    // TODO: this is wacky for now
+    let result = String::from_utf8_lossy(&out);
+    let result = result.replace("<invalid> % ", "%");
+    out = result.into_bytes();
     Ok(out)
 }

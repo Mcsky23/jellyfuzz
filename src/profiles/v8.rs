@@ -9,7 +9,10 @@ impl JsEngineProfile for V8Profile {
     }
 
     fn get_args(&self) -> Vec<String> {
-        ["--fuzzing".to_string()].to_vec()
+        [
+            "--fuzzing".to_string(),
+            "--allow-natives-syntax".to_string()
+        ].to_vec()
     }
 
     /// The size of the mpsc job queue for each FuzzWorker

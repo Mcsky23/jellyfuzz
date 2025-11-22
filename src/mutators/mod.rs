@@ -8,8 +8,8 @@ pub mod splice;
 pub mod js_objects;
 
 use std::sync::{Arc, Mutex};
-
 use swc_ecma_visit::swc_ecma_ast::Script;
+use rand::seq::{IndexedRandom, SliceRandom};
 
 use crate::utils::rand_utils::random_weighted_choice;
 
@@ -91,14 +91,12 @@ impl ManagedMutator {
         stats.last_reward = reward;
     }
 
-    pub fn record_invalid(&self) {
+    pub fn record_invalid(&self, is_timeout: bool) {
         let mut stats = self.stats.lock().expect("mutator stats poisoned");
         stats.invalid_count += 1;
-    }
-
-    pub fn record_timeout(&self) {
-        let mut stats = self.stats.lock().expect("mutator stats poisoned");
-        stats.timeout_count += 1;
+        if is_timeout {
+            stats.timeout_count += 1;
+        }
     }
 
     #[allow(dead_code)]
@@ -144,11 +142,11 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
         //     Box::new(elements::ElementAccessorMutator {}),
         //     false,
         // )),
-        Arc::new(ManagedMutator::new(
-            "MethodCallMutator",
-            Box::new(elements::MethodCallMutator {}),
-            false,
-        )),
+        // Arc::new(ManagedMutator::new(
+        //     "MethodCallMutator",
+        //     Box::new(elements::MethodCallMutator {}),
+        //     false,
+        // )),
         Arc::new(ManagedMutator::new(
             "IdentSwapMutator",
             Box::new(expressions::IdentSwapMutator {}),
@@ -177,11 +175,16 @@ pub fn get_mutator_by_name(name: &str) -> Option<Arc<ManagedMutator>> {
     None
 }
 
-pub fn get_weighted_mutator_choice(
+/// Returns a random mutator with weighted probabilities
+/// Does NOT return splicers
+pub fn get_weighted_ast_mutator_choice(
     mutators: &[Arc<ManagedMutator>],
 ) -> Arc<ManagedMutator> {
     let mut choices: Vec<(Arc<ManagedMutator>, f64)> = Vec::new();
     for m in mutators {
+        if m.is_splicer() {
+            continue;
+        }
         let stats = m.stats_snapshot();
         let weight = if stats.uses == 0 {
             1.0
@@ -198,6 +201,21 @@ pub fn get_weighted_mutator_choice(
     random_weighted_choice(&mut rand::rng(), &choices)
 }
 
+// Returns a random splicer mutator
+pub fn get_random_splicer(mutators: &[Arc<ManagedMutator>]) -> Option<Arc<ManagedMutator>> {
+    let splicers: Vec<Arc<ManagedMutator>> = mutators
+        .iter()
+        .filter(|m| m.is_splicer())
+        .cloned()
+        .collect();
+    
+    if splicers.is_empty() {
+        None
+    } else {
+        splicers.choose(&mut rand::rng()).cloned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,10 +224,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn print_ast() {
-        let script_path = "./test_out.js";
+        let script_path = "./corpus_raw2/regress-4388.js";
         let source = fs::read_to_string(script_path).expect("failed to read test script");
         let ast = parse_js(source).expect("failed to parse test script");
         println!("{:#?}", ast);
+        let code = generate_js(ast)
+            .unwrap();
+        println!("code: {}", String::from_utf8(code).unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread")]

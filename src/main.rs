@@ -4,6 +4,7 @@ mod parsing;
 mod profiles;
 mod runner;
 mod utils;
+mod fuzzer;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -18,8 +19,9 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
 
 use crate::corpus::CorpusManager;
+use crate::fuzzer::fuzz_sample;
 use crate::mutators::minifier::Minifier;
-use crate::mutators::{ManagedMutator, get_ast_mutators, get_mutator_by_name, get_weighted_mutator_choice};
+use crate::mutators::{ManagedMutator, get_ast_mutators, get_mutator_by_name};
 use crate::parsing::parser::{generate_js, parse_js};
 use crate::profiles::profile::JsEngineProfile;
 use crate::runner::pool::{FuzzPool, JobResult};
@@ -326,176 +328,9 @@ async fn run_fuzz_loop(
         iteration += 1;
         total_iterations += 1;
         
-        // if iteration >= 50_000 {
-        //     println!("Reached maximum iterations; exiting fuzz loop.");
-        //     break;
-        // }
-        
         let corpus_manager = corpus_manager.clone();
-        let selection = {
-            let mut mgr = corpus_manager.lock().await;
-            mgr.pick_random()
-        };
-        let selection = match selection {
-            Some(sel) => sel,
-            None => {
-                sleep(Duration::from_millis(50)).await;
-                continue;
-            }
-        };
-        
-        let seed_bytes = match async_fs::read(&selection.path).await {
-            Ok(data) => data,
-            Err(err) => {
-                eprintln!("Failed to read seed {:?}: {:?}", selection.path, err);
-                continue;
-            }
-        };
-        let seed_source = match String::from_utf8(seed_bytes) {
-            Ok(src) => src,
-            Err(err) => {
-                eprintln!("Skipping non-UTF8 seed {:?}: {:?}", selection.path, err);
-                continue;
-            }
-        };
-        let seed_script = match parse_js(seed_source) {
-            Ok(ast) => ast,
-            Err(err) => {
-                eprintln!("Failed to parse seed {:?}: {:?}", selection.path, err);
-                corpus_manager.lock().await.remove_entry(selection.id).await.unwrap_or(());
-                continue;
-            }
-        };
-        
-        let mutator = get_weighted_mutator_choice(mutators);
-        
-        let mutated_ast = match mutator.is_splicer() {
-            true => {
-                let donor = {
-                    let mut mgr = corpus_manager.lock().await;
-                    mgr.get_random_script().await
-                };
-                let donor = match donor {
-                    Ok(Some(script)) => script,
-                    Ok(None) => {
-                        eprintln!("No donor script available for splicing");
-                        continue;
-                    }
-                    Err(err) => {
-                        eprintln!("Failed to get donor script for splicing: {:?}", err);
-                        continue;
-                    }
-                };
-                mutator.splice(&seed_script, &donor).expect("splicing failed")
-            },
-            false => {
-                mutator.mutate(seed_script).expect("mutation failed")
-            }
-        };
-        
-        
-        let mutated_code = match generate_js(mutated_ast) {
-            Ok(code) => code,
-            Err(err) => {
-                eprintln!("Code generation failed: {:?}", err);
-                continue;
-            }
-        };
-        
-        let mut result_rx = match pool.schedule_job(mutated_code.clone()).await {
-            Ok(rx) => rx,
-            Err(err) => {
-                eprintln!("Failed to schedule job: {:?}", err);
-                continue;
-            }
-        };
-        let handle = tokio::task::spawn(async move {
-            let job_result = match result_rx.recv().await {
-                Some(Ok(res)) => res,
-                Some(Err(err)) => {
-                    eprintln!("Worker execution error: {:?}", err);
-                    return;
-                }
-                None => {
-                    eprintln!("Worker dropped execution result");
-                    return;
-                }
-            };
-            let reward = compute_reward(&job_result);
-            
-            mutator.record_reward(reward);
-            if job_result.is_timeout || job_result.status_code != 0 {
-                mutator.record_invalid();
-            }
-            if job_result.is_timeout {
-                mutator.record_timeout();
-            }
-            {
-                let mut mgr = corpus_manager.lock().await;
-                // Update stats for the original corpus entry.
-                mgr.record_result(selection.id, reward, job_result.exec_time_ms)
-                .await
-                .unwrap_or(());
-                // Persist timeouts into corpus/timeouts for later triage.
-                if job_result.is_timeout {
-                    let _ = mgr
-                    .add_entry(
-                        &mutated_code,
-                        Vec::new(),
-                        0.0,
-                        job_result.exec_time_ms,
-                        true,
-                    )
-                    .await;
-                }
-            }
-            
-            if job_result.is_crash {
-                println!(
-                    "Crash detected (exit {}, signal {}); reward {}",
-                    job_result.status_code, job_result.signal, reward
-                );
-                let root_path = {
-                    let mgr = corpus_manager.lock().await;
-                    mgr.root().to_path_buf()
-                };
-                let crash_path = output_crash_path(root_path.as_path(), iteration);
-                persist_crash(crash_path.as_path(), &mutated_code).await.unwrap_or_else(|err| {
-                    eprintln!("Failed to persist crash repro: {:?}", err);
-                });
-                return;
-            }
-            // println!(
-            //     "[iter {}] exec_time: {} ms, reward: {}, new_coverage: {}, exit_code: {}, signal: {}, path: {:?}",
-            //     iteration,
-            //     exec_time_ms,
-            //     reward,
-            //     job_result.new_coverage,
-            //     job_result.status_code,
-            //     job_result.signal,
-            //     selection.path
-            // );
-            if job_result.new_coverage && job_result.status_code == 0 && !job_result.is_timeout {
-                let add_result = {
-                    let mut mgr = corpus_manager.lock().await;
-                    mgr.add_entry(
-                        &mutated_code,
-                        job_result.edge_hits.clone(),
-                        reward.max(0.0),
-                        job_result.exec_time_ms,
-                        job_result.is_timeout,
-                    )
-                    .await
-                };
-                if let Ok(Some(entry)) = add_result {
-                    // println!(
-                    //     "[iter {}] new corpus entry {} ({} bytes)",
-                    //     iteration, entry.id, entry.size_bytes
-                    // );
-                }
-            }
-        });
-        handles.push(handle);
+        fuzz_sample(corpus_manager, mutators, &mut handles, pool)
+            .await;
         if handles.len() >= 10000 {
             for handle in handles.drain(..) {
                 handle.await.expect("fuzz loop task failed");
