@@ -5,6 +5,7 @@ mod profiles;
 mod runner;
 mod utils;
 mod fuzzer;
+mod code_generators;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;

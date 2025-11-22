@@ -6,7 +6,7 @@ use rand::prelude::IndexedRandom;
 
 use crate::mutators::js_objects::js_types::*;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct JsGlobalObject {
     sym: String,
     methods: Vec<JsMethod>,
@@ -19,7 +19,7 @@ pub enum JsMethodKind {
     Instance
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct JsMethod {
     sym: String,
     kind: JsMethodKind,
@@ -32,7 +32,7 @@ pub struct JsProperty {
     kind: JsMethodKind
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct JsMethodSignature {
     types: Vec<JsObjectType>,
 }
@@ -82,6 +82,14 @@ impl JsGlobalObject {
     pub fn methods(&self) -> &[JsMethod] {
         &self.methods
     }
+
+    pub fn get_constructor_signatures(&self) -> Vec<JsMethodSignature> {
+        self.methods
+            .iter()
+            .find(|method| method.sym() == self.sym())
+            .map(|method| method.signatures().to_vec())
+            .unwrap_or_default()
+    }
 }
 
 impl JsMethod {
@@ -98,11 +106,11 @@ impl JsMethod {
     }
 }
 
-pub fn get_random_global_object(rng: &mut rand::rngs::ThreadRng) -> String {
+pub fn get_random_global_object(rng: &mut rand::rngs::ThreadRng) -> JsGlobalObject {
     let global_objects = JS_GLOBAL_OBJECTS.clone();
-    global_objects.choose(rng)
-        .expect("should never panic cause of hardcoded array")
-        .sym
+    // global_objects.choose(rng)
+    global_objects[0]
+        // .expect("should never panic cause of hardcoded array")
         .clone()
 }
 
@@ -124,9 +132,9 @@ lazy_static! {
                 ("Array", Static, &[
                         &[],
                         &[Number],
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
+                        // &[Any],
+                        // &[Any, Any],
+                        // &[Any, Any, Any],
                     ]),
                 ("from", Static, &[
                         &[Any],

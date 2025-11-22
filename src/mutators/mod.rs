@@ -122,11 +122,11 @@ pub fn get_ast_mutators() -> Vec<Arc<ManagedMutator>> {
             Box::new(literals::array_mutator::ArrayMutator {}),
             false,
         )),
-        Arc::new(ManagedMutator::new(
-            "ConstructorCall",
-            Box::new(literals::constructor_call::ConstructorCall {}),
-            false,
-        )),
+        // Arc::new(ManagedMutator::new(
+        //     "ConstructorCall",
+        //     Box::new(literals::constructor_call::ConstructorCall {}),
+        //     false,
+        // )),
         Arc::new(ManagedMutator::new(
             "OperatorSwap",
             Box::new(operators::OperatorSwap {}),
@@ -224,7 +224,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn print_ast() {
-        let script_path = "./corpus_raw2/regress-4388.js";
+        let script_path = "./test_out.js";
         let source = fs::read_to_string(script_path).expect("failed to read test script");
         let ast = parse_js(source).expect("failed to parse test script");
         println!("{:#?}", ast);
