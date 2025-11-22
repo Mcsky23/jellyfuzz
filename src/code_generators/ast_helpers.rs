@@ -6,7 +6,6 @@ use swc_common::{DUMMY_SP, SyntaxContext};
 use swc_ecma_visit::{Visit, VisitMut, VisitMutWith};
 use swc_ecma_visit::{VisitWith, swc_ecma_ast::*};
 
-use crate::code_generators::code_generator::VarInScope;
 use crate::mutators::js_objects::js_objects::JsMethodSignature;
 use crate::mutators::js_objects::js_types::JsObjectType;
 
@@ -89,7 +88,7 @@ pub fn build_property_call(
 
 pub fn build_args(
     sig: &JsMethodSignature,
-    value_pool: &[VarInScope],
+    value_pool: &[String],
 ) -> Vec<Expr> {
     sig.types()
     .iter()
@@ -97,13 +96,13 @@ pub fn build_args(
     .collect()
 }
 
-fn build_arg_expr(ty: JsObjectType, value_pool: &[VarInScope]) -> Expr {
+fn build_arg_expr(ty: JsObjectType, value_pool: &[String]) -> Expr {
     let mut rng = rand::rngs::ThreadRng::default();
     if !value_pool.is_empty() && rng.random_bool(0.35) {
         if let Some(existing) = value_pool.choose(&mut rng) {
             return Expr::Ident(Ident {
                 span: DUMMY_SP,
-                sym: Atom::from(existing.name.as_str()),
+                sym: Atom::from(existing.as_str()),
                 optional: false,
                 ctxt: SyntaxContext::empty(),
             });
@@ -123,6 +122,13 @@ fn build_arg_expr(ty: JsObjectType, value_pool: &[VarInScope]) -> Expr {
                 span: DUMMY_SP,
                 value: v,
                 raw: None,
+            }))
+        }
+        JsObjectType::Boolean => {
+            let v = rng.random_bool(0.5);
+            Expr::Lit(Lit::Bool(Bool {
+                span: DUMMY_SP,
+                value: v,
             }))
         }
         JsObjectType::JsString => {
@@ -148,7 +154,7 @@ fn build_arg_expr(ty: JsObjectType, value_pool: &[VarInScope]) -> Expr {
                 if let Some(existing) = value_pool.choose(&mut rng) {
                     return Expr::Ident(Ident {
                         span: DUMMY_SP,
-                        sym: Atom::from(existing.name.as_str()),
+                        sym: Atom::from(existing.as_str()),
                         optional: false,
                         ctxt: SyntaxContext::empty(),
                     });

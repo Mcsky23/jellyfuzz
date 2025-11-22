@@ -5,6 +5,7 @@
 pub enum JsObjectType {
     Any,
 
+    Boolean,
     Array,
     /// Placeholder for a function/callback argument
     Function,

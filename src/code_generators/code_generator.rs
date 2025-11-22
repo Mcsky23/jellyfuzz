@@ -53,6 +53,16 @@ impl CodeGenerator {
         self.scope_stack.last().unwrap().vars.clone()
     }
 
+    fn scope_var_names(&self) -> Vec<String> {
+        self.scope_stack
+            .last()
+            .unwrap()
+            .vars
+            .iter()
+            .map(|v| v.name.clone())
+            .collect()
+    }
+
     fn add_scope_var(&mut self, var_name: String, obj_type: Option<JsGlobalObject>) {
         if let Some(scope) = self.scope_stack.last_mut() {
             scope.vars.push(VarInScope { name: var_name, obj_type });
@@ -86,7 +96,7 @@ impl CodeGenerator {
 
         // build argument expressions based on the constructor signature
         // println!("self.scope_vars(): {:?}", self.scope_vars());
-        let args = build_args(&ctor_signature, &self.scope_vars());
+        let args = build_args(&ctor_signature, &self.scope_var_names());
         let ctor_expr = build_ctor_expr(&global_obj.sym(), args);
         
         let var_decl = build_var_decl(&obj_name, ctor_expr);
@@ -112,17 +122,28 @@ impl CodeGenerator {
             let method = obj_type.methods()
                 .choose(&mut self.rng)
                 .expect("should never panic because global object has methods");
+            // let method = obj_type.methods()[26].clone(); // testing: push method of Array
+
+            println!("Chosen method for {}: {}", obj_type.sym(), method.sym());
             let method_signature = method.signatures()
                 .choose(&mut self.rng)
                 .expect("should never panic because method has signatures");
-            let args = build_args(&method_signature, &self.scope_vars());
+            let args = build_args(&method_signature, &self.scope_var_names());
             let call_expr = build_property_call(&var_in_scope.name, &method.sym(), args);
 
-            let new_var_name = self.get_new_var_name();
-            let var_decl = build_var_decl(&new_var_name, call_expr);
-            self.add_scope_var(new_var_name, None);
-
-            self.ast.body.push(Stmt::Decl(Decl::Var(Box::new(var_decl))));
+            if method.returns().is_some() {
+                let new_var_name = self.get_new_var_name();
+                let var_decl = build_var_decl(&new_var_name, call_expr);
+                self.add_scope_var(new_var_name, None);
+                self.ast.body.push(Stmt::Decl(Decl::Var(Box::new(var_decl))));
+            } else {
+                self.ast.body.push(Stmt::Expr(ExprStmt {
+                    span: DUMMY_SP,
+                    expr: Box::new(call_expr),
+                }));
+            }
+        } else {
+            todo!();
         }
     }
 }

@@ -24,6 +24,7 @@ pub struct JsMethod {
     sym: String,
     kind: JsMethodKind,
     signatures: Vec<JsMethodSignature>,
+    returns: Option<JsObjectType>,
 }
 
 #[derive(Clone)]
@@ -53,6 +54,17 @@ impl JsGlobalObject {
         methods: &[(&str, JsMethodKind, &[&[JsObjectType]])],
         properties: &[(&str, JsMethodKind)],
     ) -> Self {
+        JsGlobalObject::new_with_returns(sym, methods, properties, &[])
+    }
+
+    fn new_with_returns(
+        sym: &str,
+        methods: &[(&str, JsMethodKind, &[&[JsObjectType]])],
+        properties: &[(&str, JsMethodKind)],
+        returns: &[(&str, JsObjectType)],
+    ) -> Self {
+        use std::collections::HashMap;
+        let ret_map: HashMap<&str, JsObjectType> = returns.iter().cloned().collect();
         Self {
             sym: sym.to_string(),
             methods: methods
@@ -61,6 +73,7 @@ impl JsGlobalObject {
                     sym: sym.to_string(),
                     kind: *kind,
                     signatures: JsGlobalObject::build_signatures(signatures),
+                    returns: ret_map.get(sym).copied(),
                 })
                 .collect(),
             properties: properties.iter().map(|(sym, _)| sym.to_string()).collect(),
@@ -104,6 +117,10 @@ impl JsMethod {
     pub fn signatures(&self) -> &[JsMethodSignature] {
         &self.signatures
     }
+
+    pub fn returns(&self) -> Option<JsObjectType> {
+        self.returns
+    }
 }
 
 pub fn get_random_global_object(rng: &mut rand::rngs::ThreadRng) -> JsGlobalObject {
@@ -124,7 +141,7 @@ use JsObjectType::*;
 // TODO: maybe I don't want to enforce types in order to explore more code posibilities
 lazy_static! {
     static ref JS_GLOBAL_OBJECTS: Vec<JsGlobalObject> = vec![
-        JsGlobalObject::new(
+        JsGlobalObject::new_with_returns(
             // object name
             "Array",
             // object methods
@@ -239,10 +256,10 @@ lazy_static! {
                         &[],
                     ]),
                 ("push", Instance, &[
-                        &[],
+                        // &[],
                         &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
+                        // &[Any, Any],
+                        // &[Any, Any, Any],
                     ]),
                 ("reduce", Instance, &[
                         &[Function],
@@ -321,6 +338,50 @@ lazy_static! {
                 ("length", Instance),
                 ("Symbol.unscopables", Instance),
                 ("Symbol.species", Static),
+            ],
+            &[
+                ("Array", Array),
+                ("from", Array),
+                ("fromAsync", Array),
+                ("isArray", Boolean),
+                ("of", Array),
+                ("at", Any),
+                ("concat", Array),
+                ("copyWithin", Array),
+                ("entries", Object),
+                ("every", Boolean),
+                ("fill", Array),
+                ("filter", Array),
+                ("find", Any),
+                ("findIndex", Number),
+                ("findLast", Any),
+                ("findLastIndex", Number),
+                ("flat", Array),
+                ("flatMap", Array),
+                ("forEach", Any),
+                ("includes", Boolean),
+                ("indexOf", Number),
+                ("join", JsString),
+                ("keys", Object),
+                ("lastIndexOf", Number),
+                ("map", Array),
+                ("pop", Any),
+                ("reduce", Any),
+                ("reduceRight", Any),
+                ("reverse", Array),
+                ("shift", Any),
+                ("slice", Array),
+                ("some", Boolean),
+                ("splice", Array),
+                ("toLocaleString", JsString),
+                ("toReversed", Array),
+                ("toSorted", Array),
+                ("toSpliced", Array),
+                ("toString", JsString),
+                ("unshift", Number),
+                ("values", Object),
+                ("with", Array),
+                ("Symbol.iterator", Object),
             ],
         ),
         JsGlobalObject::new(
@@ -1030,7 +1091,7 @@ lazy_static! {
                         &[Any],
                     ]),
                 ("map", Instance, &[
-                        &[Any],
+                        &[Function],
                     ]),
                 ("reduce", Instance, &[
                         &[Any],
