@@ -1,7 +1,6 @@
+use rand::Rng;
 
-
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsObjectType {
     Any,
 
@@ -15,6 +14,21 @@ pub enum JsObjectType {
     Number,
     /// Placeholder for an object-like argument
     Object,
+    Undefined,
+}
+
+impl JsObjectType {
+    pub fn random_primitive_type(rng: &mut rand::rngs::ThreadRng) -> JsObjectType {
+        let choice = rng.random_range(0..5);
+        match choice {
+            0 => JsObjectType::Boolean,
+            1 => JsObjectType::Number,
+            2 => JsObjectType::JsString,
+            3 => JsObjectType::Array,
+            4 => JsObjectType::Object,
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub struct StaticPropertySig {

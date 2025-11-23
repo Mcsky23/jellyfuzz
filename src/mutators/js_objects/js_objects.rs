@@ -13,7 +13,7 @@ pub struct JsGlobalObject {
     properties: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsMethodKind {
     Static,
     Instance
@@ -51,29 +51,18 @@ impl JsMethodSignature {
 impl JsGlobalObject {
     fn new(
         sym: &str,
-        methods: &[(&str, JsMethodKind, &[&[JsObjectType]])],
+        methods: &[(&str, JsMethodKind, Option<JsObjectType>, &[&[JsObjectType]])],
         properties: &[(&str, JsMethodKind)],
     ) -> Self {
-        JsGlobalObject::new_with_returns(sym, methods, properties, &[])
-    }
-
-    fn new_with_returns(
-        sym: &str,
-        methods: &[(&str, JsMethodKind, &[&[JsObjectType]])],
-        properties: &[(&str, JsMethodKind)],
-        returns: &[(&str, JsObjectType)],
-    ) -> Self {
-        use std::collections::HashMap;
-        let ret_map: HashMap<&str, JsObjectType> = returns.iter().cloned().collect();
         Self {
             sym: sym.to_string(),
             methods: methods
                 .iter()
-                .map(|(sym, kind, signatures)| JsMethod {
+                .map(|(sym, kind, returns, signatures)| JsMethod {
                     sym: sym.to_string(),
                     kind: *kind,
                     signatures: JsGlobalObject::build_signatures(signatures),
-                    returns: ret_map.get(sym).copied(),
+                    returns: *returns,
                 })
                 .collect(),
             properties: properties.iter().map(|(sym, _)| sym.to_string()).collect(),
@@ -96,12 +85,37 @@ impl JsGlobalObject {
         &self.methods
     }
 
+    pub fn instance_methods(&self) -> Vec<&JsMethod> {
+        self.methods
+            .iter()
+            .filter(|method| method.kind() == JsMethodKind::Instance)
+            .collect()
+    }
+
     pub fn get_constructor_signatures(&self) -> Vec<JsMethodSignature> {
         self.methods
             .iter()
             .find(|method| method.sym() == self.sym())
             .map(|method| method.signatures().to_vec())
             .unwrap_or_default()
+    }
+
+    pub fn static_methods(&self) -> Vec<&JsMethod> {
+        self.methods
+            .iter()
+            .filter(|method| method.kind() == JsMethodKind::Static)
+            .collect()
+    }
+
+    pub fn from_js_type(ty: JsObjectType) -> JsGlobalObject {
+        match ty {
+            JsObjectType::Array => get_global_object("Array").unwrap(),
+            JsObjectType::Boolean => get_global_object("Boolean").unwrap(),
+            JsObjectType::Number => get_global_object("Number").unwrap(),
+            JsObjectType::JsString => get_global_object("String").unwrap(),
+            JsObjectType::Object => get_global_object("Object").unwrap(),
+            _ => panic!("No global object for type {:?}", ty),
+        }
     }
 }
 
@@ -141,195 +155,195 @@ use JsObjectType::*;
 // TODO: maybe I don't want to enforce types in order to explore more code posibilities
 lazy_static! {
     static ref JS_GLOBAL_OBJECTS: Vec<JsGlobalObject> = vec![
-        JsGlobalObject::new_with_returns(
+        JsGlobalObject::new(
             // object name
             "Array",
             // object methods
             &[
-                ("Array", Static, &[
+                ("Array", Static, Some(Array), &[
                         &[],
                         &[Number],
                         // &[Any],
                         // &[Any, Any],
                         // &[Any, Any, Any],
                     ]),
-                ("from", Static, &[
+                ("from", Static, Some(Array), &[
                         &[Any],
                         &[Any, Function],
                         &[Any, Function, Any],
                     ]),
-                ("fromAsync", Static, &[
+                ("fromAsync", Static, Some(Array), &[
                         &[Any],
                         &[Any, Function],
                         &[Any, Function, Any],
                     ]),
-                ("isArray", Static, &[
+                ("isArray", Static, Some(Boolean), &[
                         &[Any],
                     ]),
-                ("of", Static, &[
+                ("of", Static, Some(Array), &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("at", Instance, &[
+                ("at", Instance, Some(Any), &[
                         &[Number],
                     ]),
-                ("concat", Instance, &[
+                ("concat", Instance, Some(Array), &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("copyWithin", Instance, &[
+                ("copyWithin", Instance, Some(Array), &[
                         &[Number, Number],
                         &[Number, Number, Number],
                     ]),
-                ("entries", Instance, &[
+                ("entries", Instance, Some(Object), &[
                         &[],
                     ]),
-                ("every", Instance, &[
+                ("every", Instance, Some(Boolean), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("fill", Instance, &[
+                ("fill", Instance, Some(Array), &[
                         &[Any],
                         &[Any, Number],
                         &[Any, Number, Number],
                     ]),
-                ("filter", Instance, &[
+                ("filter", Instance, Some(Array), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("find", Instance, &[
+                ("find", Instance, Some(Any), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("findIndex", Instance, &[
+                ("findIndex", Instance, Some(Number), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("findLast", Instance, &[
+                ("findLast", Instance, Some(Any), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("findLastIndex", Instance, &[
+                ("findLastIndex", Instance, Some(Number), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("flat", Instance, &[
+                ("flat", Instance, Some(Array), &[
                         &[],
                         &[Number],
                     ]),
-                ("flatMap", Instance, &[
+                ("flatMap", Instance, Some(Array), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("forEach", Instance, &[
+                ("forEach", Instance, Some(Any), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("includes", Instance, &[
+                ("includes", Instance, Some(Boolean), &[
                         &[Any],
                         &[Any, Number],
                     ]),
-                ("indexOf", Instance, &[
+                ("indexOf", Instance, Some(Number), &[
                         &[Any],
                         &[Any, Number],
                     ]),
-                ("join", Instance, &[
+                ("join", Instance, Some(JsString), &[
                         &[],
                         &[JsString],
                     ]),
-                ("keys", Instance, &[
+                ("keys", Instance, Some(Object), &[
                         &[],
                     ]),
-                ("lastIndexOf", Instance, &[
+                ("lastIndexOf", Instance, Some(Number), &[
                         &[Any],
                         &[Any, Number],
                     ]),
-                ("map", Instance, &[
+                ("map", Instance, Some(Array), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("pop", Instance, &[
+                ("pop", Instance, Some(Any), &[
                         &[],
                     ]),
-                ("push", Instance, &[
+                ("push", Instance, None, &[
                         // &[],
                         &[Any],
                         // &[Any, Any],
                         // &[Any, Any, Any],
                     ]),
-                ("reduce", Instance, &[
+                ("reduce", Instance, Some(Any), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("reduceRight", Instance, &[
+                ("reduceRight", Instance, Some(Any), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("reverse", Instance, &[
+                ("reverse", Instance, Some(Array), &[
                         &[],
                     ]),
-                ("shift", Instance, &[
+                ("shift", Instance, Some(Any), &[
                         &[],
                     ]),
-                ("slice", Instance, &[
+                ("slice", Instance, Some(Array), &[
                         &[],
                         &[Number],
                         &[Number, Number],
                     ]),
-                ("some", Instance, &[
+                ("some", Instance, Some(Boolean), &[
                         &[Function],
                         &[Function, Any],
                     ]),
-                ("sort", Instance, &[
+                ("sort", Instance, None, &[
                         &[],
                         &[Function],
                     ]),
-                ("splice", Instance, &[
+                ("splice", Instance, Some(Array), &[
                         &[Number],
                         &[Number, Number],
                         &[Number, Number, Any],
                         &[Number, Number, Any, Any],
                         &[Number, Number, Any, Any, Any],
                     ]),
-                ("toLocaleString", Instance, &[
+                ("toLocaleString", Instance, Some(JsString), &[
                         &[],
                         &[JsString],
                         &[JsString, Object],
                     ]),
-                ("toReversed", Instance, &[
+                ("toReversed", Instance, Some(Array), &[
                         &[],
                     ]),
-                ("toSorted", Instance, &[
+                ("toSorted", Instance, Some(Array), &[
                         &[],
                         &[Function],
                     ]),
-                ("toSpliced", Instance, &[
+                ("toSpliced", Instance, Some(Array), &[
                         &[Number],
                         &[Number, Number],
                         &[Number, Number, Any],
                         &[Number, Number, Any, Any],
                         &[Number, Number, Any, Any, Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("unshift", Instance, &[
+                ("unshift", Instance, Some(Number), &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("values", Instance, &[
+                ("values", Instance, Some(Object), &[
                         &[],
                     ]),
-                ("with", Instance, &[
+                ("with", Instance, Some(Array), &[
                         &[Number, Any],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, Some(Object), &[
                         &[],
                     ]),
             ],
@@ -339,71 +353,27 @@ lazy_static! {
                 ("Symbol.unscopables", Instance),
                 ("Symbol.species", Static),
             ],
-            &[
-                ("Array", Array),
-                ("from", Array),
-                ("fromAsync", Array),
-                ("isArray", Boolean),
-                ("of", Array),
-                ("at", Any),
-                ("concat", Array),
-                ("copyWithin", Array),
-                ("entries", Object),
-                ("every", Boolean),
-                ("fill", Array),
-                ("filter", Array),
-                ("find", Any),
-                ("findIndex", Number),
-                ("findLast", Any),
-                ("findLastIndex", Number),
-                ("flat", Array),
-                ("flatMap", Array),
-                ("forEach", Any),
-                ("includes", Boolean),
-                ("indexOf", Number),
-                ("join", JsString),
-                ("keys", Object),
-                ("lastIndexOf", Number),
-                ("map", Array),
-                ("pop", Any),
-                ("reduce", Any),
-                ("reduceRight", Any),
-                ("reverse", Array),
-                ("shift", Any),
-                ("slice", Array),
-                ("some", Boolean),
-                ("splice", Array),
-                ("toLocaleString", JsString),
-                ("toReversed", Array),
-                ("toSorted", Array),
-                ("toSpliced", Array),
-                ("toString", JsString),
-                ("unshift", Number),
-                ("values", Object),
-                ("with", Array),
-                ("Symbol.iterator", Object),
-            ],
         ),
         JsGlobalObject::new(
             "ArrayBuffer",
             &[
-                ("ArrayBuffer", Static, &[]),
-                ("isView", Static, &[
+                ("ArrayBuffer", Static, None, &[]),
+                ("isView", Static, None, &[
                         &[Any],
                     ]),
-                ("resize", Instance, &[
+                ("resize", Instance, None, &[
                         &[Any],
                     ]),
-                ("slice", Instance, &[
+                ("slice", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("transfer", Instance, &[
+                ("transfer", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("transferToFixedLength", Instance, &[
+                ("transferToFixedLength", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
@@ -419,23 +389,23 @@ lazy_static! {
         JsGlobalObject::new(
             "AsyncDisposableStack",
             &[
-                ("AsyncDisposableStack", Static, &[]),
-                ("adopt", Instance, &[
+                ("AsyncDisposableStack", Static, None, &[]),
+                ("adopt", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("defer", Instance, &[
+                ("defer", Instance, None, &[
                         &[Any],
                     ]),
-                ("disposeAsync", Instance, &[
+                ("disposeAsync", Instance, None, &[
                         &[],
                     ]),
-                ("move", Instance, &[
+                ("move", Instance, None, &[
                         &[],
                     ]),
-                ("use", Instance, &[
+                ("use", Instance, None, &[
                         &[Any],
                     ]),
-                ("Symbol.asyncDispose", Instance, &[
+                ("Symbol.asyncDispose", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -446,7 +416,7 @@ lazy_static! {
         JsGlobalObject::new(
             "AsyncFunction",
             &[
-                ("AsyncFunction", Static, &[]),
+                ("AsyncFunction", Static, None, &[]),
             ],
             &[
             ],
@@ -454,15 +424,15 @@ lazy_static! {
         JsGlobalObject::new(
             "AsyncGenerator",
             &[
-                ("next", Instance, &[
+                ("next", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("return", Instance, &[
+                ("return", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("throw", Instance, &[
+                ("throw", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -472,7 +442,7 @@ lazy_static! {
         JsGlobalObject::new(
             "AsyncGeneratorFunction",
             &[
-                ("AsyncGeneratorFunction", Static, &[]),
+                ("AsyncGeneratorFunction", Static, None, &[]),
             ],
             &[
                 ("prototype", Instance),
@@ -481,10 +451,10 @@ lazy_static! {
         JsGlobalObject::new(
             "AsyncIterator",
             &[
-                ("Symbol.asyncDispose", Instance, &[
+                ("Symbol.asyncDispose", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.asyncIterator", Instance, &[
+                ("Symbol.asyncIterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -494,49 +464,49 @@ lazy_static! {
         JsGlobalObject::new(
             "Atomics",
             &[
-                ("add", Static, &[
+                ("add", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("and", Static, &[
+                ("and", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("compareExchange", Static, &[
+                ("compareExchange", Static, None, &[
                         &[Any, Any, Any, Any],
                     ]),
-                ("exchange", Static, &[
+                ("exchange", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("isLockFree", Static, &[
+                ("isLockFree", Static, None, &[
                         &[Any],
                     ]),
-                ("load", Static, &[
+                ("load", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("notify", Static, &[
+                ("notify", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("or", Static, &[
+                ("or", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("pause", Static, &[
+                ("pause", Static, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("store", Static, &[
+                ("store", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("sub", Static, &[
+                ("sub", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("wait", Static, &[
-                        &[Any, Any, Any],
-                        &[Any, Any, Any, Any],
-                    ]),
-                ("waitAsync", Static, &[
+                ("wait", Static, None, &[
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("xor", Static, &[
+                ("waitAsync", Static, None, &[
+                        &[Any, Any, Any],
+                        &[Any, Any, Any, Any],
+                    ]),
+                ("xor", Static, None, &[
                         &[Any, Any, Any],
                     ]),
             ],
@@ -546,23 +516,23 @@ lazy_static! {
         JsGlobalObject::new(
             "BigInt",
             &[
-                ("BigInt", Static, &[]),
-                ("asIntN", Static, &[
+                ("BigInt", Static, None, &[]),
+                ("asIntN", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("asUintN", Static, &[
+                ("asUintN", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("toLocaleString", Instance, &[
+                ("toLocaleString", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                         &[Any],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -572,7 +542,7 @@ lazy_static! {
         JsGlobalObject::new(
             "BigInt64Array",
             &[
-                ("BigInt64Array", Static, &[]),
+                ("BigInt64Array", Static, None, &[]),
             ],
             &[
             ],
@@ -580,7 +550,7 @@ lazy_static! {
         JsGlobalObject::new(
             "BigUint64Array",
             &[
-                ("BigUint64Array", Static, &[]),
+                ("BigUint64Array", Static, None, &[]),
             ],
             &[
             ],
@@ -588,11 +558,11 @@ lazy_static! {
         JsGlobalObject::new(
             "Boolean",
             &[
-                ("Boolean", Static, &[]),
-                ("toString", Instance, &[
+                ("Boolean", Static, None, &[]),
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -602,88 +572,88 @@ lazy_static! {
         JsGlobalObject::new(
             "DataView",
             &[
-                ("DataView", Static, &[]),
-                ("getBigInt64", Instance, &[
+                ("DataView", Static, None, &[]),
+                ("getBigInt64", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getBigUint64", Instance, &[
+                ("getBigUint64", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getFloat16", Instance, &[
+                ("getFloat16", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getFloat32", Instance, &[
+                ("getFloat32", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getFloat64", Instance, &[
+                ("getFloat64", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getInt8", Instance, &[
+                ("getInt8", Instance, None, &[
                         &[Any],
                     ]),
-                ("getInt16", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("getInt32", Instance, &[
+                ("getInt16", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getUint8", Instance, &[
-                        &[Any],
-                    ]),
-                ("getUint16", Instance, &[
+                ("getInt32", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("getUint32", Instance, &[
+                ("getUint8", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("getUint16", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("setBigInt64", Instance, &[
+                ("getUint32", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("setBigInt64", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setBigUint64", Instance, &[
+                ("setBigUint64", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setFloat16", Instance, &[
+                ("setFloat16", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setFloat32", Instance, &[
+                ("setFloat32", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setFloat64", Instance, &[
+                ("setFloat64", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setInt8", Instance, &[
+                ("setInt8", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("setInt16", Instance, &[
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("setInt32", Instance, &[
+                ("setInt16", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setUint8", Instance, &[
-                        &[Any, Any],
-                    ]),
-                ("setUint16", Instance, &[
+                ("setInt32", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setUint32", Instance, &[
+                ("setUint8", Instance, None, &[
+                        &[Any, Any],
+                    ]),
+                ("setUint16", Instance, None, &[
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("setUint32", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
@@ -697,14 +667,14 @@ lazy_static! {
         JsGlobalObject::new(
             "Date",
             &[
-                ("Date", Static, &[]),
-                ("now", Static, &[
+                ("Date", Static, None, &[]),
+                ("now", Static, None, &[
                         &[],
                     ]),
-                ("parse", Static, &[
+                ("parse", Static, None, &[
                         &[Any],
                     ]),
-                ("UTC", Static, &[
+                ("UTC", Static, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
@@ -713,160 +683,160 @@ lazy_static! {
                         &[Any, Any, Any, Any, Any, Any],
                         &[Any, Any, Any, Any, Any, Any, Any],
                     ]),
-                ("getDate", Instance, &[
+                ("getDate", Instance, None, &[
                         &[],
                     ]),
-                ("getDay", Instance, &[
+                ("getDay", Instance, None, &[
                         &[],
                     ]),
-                ("getFullYear", Instance, &[
+                ("getFullYear", Instance, None, &[
                         &[],
                     ]),
-                ("getHours", Instance, &[
+                ("getHours", Instance, None, &[
                         &[],
                     ]),
-                ("getMilliseconds", Instance, &[
+                ("getMilliseconds", Instance, None, &[
                         &[],
                     ]),
-                ("getMinutes", Instance, &[
+                ("getMinutes", Instance, None, &[
                         &[],
                     ]),
-                ("getMonth", Instance, &[
+                ("getMonth", Instance, None, &[
                         &[],
                     ]),
-                ("getSeconds", Instance, &[
+                ("getSeconds", Instance, None, &[
                         &[],
                     ]),
-                ("getTime", Instance, &[
+                ("getTime", Instance, None, &[
                         &[],
                     ]),
-                ("getTimezoneOffset", Instance, &[
+                ("getTimezoneOffset", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCDate", Instance, &[
+                ("getUTCDate", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCDay", Instance, &[
+                ("getUTCDay", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCFullYear", Instance, &[
+                ("getUTCFullYear", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCHours", Instance, &[
+                ("getUTCHours", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCMilliseconds", Instance, &[
+                ("getUTCMilliseconds", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCMinutes", Instance, &[
+                ("getUTCMinutes", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCMonth", Instance, &[
+                ("getUTCMonth", Instance, None, &[
                         &[],
                     ]),
-                ("getUTCSeconds", Instance, &[
+                ("getUTCSeconds", Instance, None, &[
                         &[],
                     ]),
-                ("setDate", Instance, &[
+                ("setDate", Instance, None, &[
                         &[Any],
                     ]),
-                ("setFullYear", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("setHours", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                        &[Any, Any, Any, Any],
-                    ]),
-                ("setMilliseconds", Instance, &[
-                        &[Any],
-                    ]),
-                ("setMinutes", Instance, &[
+                ("setFullYear", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setMonth", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("setSeconds", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("setTime", Instance, &[
-                        &[Any],
-                    ]),
-                ("setUTCDate", Instance, &[
-                        &[Any],
-                    ]),
-                ("setUTCFullYear", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("setUTCHours", Instance, &[
+                ("setHours", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("setUTCMilliseconds", Instance, &[
+                ("setMilliseconds", Instance, None, &[
                         &[Any],
                     ]),
-                ("setUTCMinutes", Instance, &[
+                ("setMinutes", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("setUTCMonth", Instance, &[
+                ("setMonth", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("setUTCSeconds", Instance, &[
+                ("setSeconds", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toDateString", Instance, &[
+                ("setTime", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("setUTCDate", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("setUTCFullYear", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("setUTCHours", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                        &[Any, Any, Any, Any],
+                    ]),
+                ("setUTCMilliseconds", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("setUTCMinutes", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("setUTCMonth", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("setUTCSeconds", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("toDateString", Instance, None, &[
                         &[],
                     ]),
-                ("toISOString", Instance, &[
+                ("toISOString", Instance, None, &[
                         &[],
                     ]),
-                ("toJSON", Instance, &[
+                ("toJSON", Instance, None, &[
                         &[],
                     ]),
-                ("toLocaleDateString", Instance, &[
+                ("toLocaleDateString", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toLocaleString", Instance, &[
+                ("toLocaleString", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toLocaleTimeString", Instance, &[
+                ("toLocaleTimeString", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("toTimeString", Instance, &[
+                ("toTimeString", Instance, None, &[
                         &[],
                     ]),
-                ("toUTCString", Instance, &[
+                ("toUTCString", Instance, None, &[
                         &[],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.toPrimitive", Instance, &[
+                ("Symbol.toPrimitive", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -876,23 +846,23 @@ lazy_static! {
         JsGlobalObject::new(
             "DisposableStack",
             &[
-                ("DisposableStack", Static, &[]),
-                ("adopt", Instance, &[
+                ("DisposableStack", Static, None, &[]),
+                ("adopt", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("defer", Instance, &[
+                ("defer", Instance, None, &[
                         &[Any],
                     ]),
-                ("dispose", Instance, &[
+                ("dispose", Instance, None, &[
                         &[],
                     ]),
-                ("move", Instance, &[
+                ("move", Instance, None, &[
                         &[],
                     ]),
-                ("use", Instance, &[
+                ("use", Instance, None, &[
                         &[Any],
                     ]),
-                ("Symbol.dispose", Instance, &[
+                ("Symbol.dispose", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -903,15 +873,15 @@ lazy_static! {
         JsGlobalObject::new(
             "Error",
             &[
-                ("Error", Static, &[]),
-                ("captureStackTrace", Static, &[
+                ("Error", Static, None, &[]),
+                ("captureStackTrace", Static, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("isError", Static, &[
+                ("isError", Static, None, &[
                         &[Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
             ],
@@ -924,7 +894,7 @@ lazy_static! {
         JsGlobalObject::new(
             "EvalError",
             &[
-                ("EvalError", Static, &[]),
+                ("EvalError", Static, None, &[]),
             ],
             &[
             ],
@@ -932,12 +902,12 @@ lazy_static! {
         JsGlobalObject::new(
             "FinalizationRegistry",
             &[
-                ("FinalizationRegistry", Static, &[]),
-                ("register", Instance, &[
+                ("FinalizationRegistry", Static, None, &[]),
+                ("register", Instance, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("unregister", Instance, &[
+                ("unregister", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -947,7 +917,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Float16Array",
             &[
-                ("Float16Array", Static, &[]),
+                ("Float16Array", Static, None, &[]),
             ],
             &[
             ],
@@ -955,7 +925,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Float32Array",
             &[
-                ("Float32Array", Static, &[]),
+                ("Float32Array", Static, None, &[]),
             ],
             &[
             ],
@@ -963,7 +933,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Float64Array",
             &[
-                ("Float64Array", Static, &[]),
+                ("Float64Array", Static, None, &[]),
             ],
             &[
             ],
@@ -971,27 +941,27 @@ lazy_static! {
         JsGlobalObject::new(
             "Function",
             &[
-                ("Function", Static, &[]),
-                ("apply", Instance, &[
+                ("Function", Static, None, &[]),
+                ("apply", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("bind", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                        &[Any, Any, Any, Any],
-                    ]),
-                ("call", Instance, &[
+                ("bind", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("toString", Instance, &[
+                ("call", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                        &[Any, Any, Any, Any],
+                    ]),
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("Symbol.hasInstance", Instance, &[
+                ("Symbol.hasInstance", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -1004,15 +974,15 @@ lazy_static! {
         JsGlobalObject::new(
             "Generator",
             &[
-                ("next", Instance, &[
+                ("next", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("return", Instance, &[
+                ("return", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("throw", Instance, &[
+                ("throw", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -1022,7 +992,7 @@ lazy_static! {
         JsGlobalObject::new(
             "GeneratorFunction",
             &[
-                ("GeneratorFunction", Static, &[]),
+                ("GeneratorFunction", Static, None, &[]),
             ],
             &[
                 ("prototype", Instance),
@@ -1031,7 +1001,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Int8Array",
             &[
-                ("Int8Array", Static, &[]),
+                ("Int8Array", Static, None, &[]),
             ],
             &[
             ],
@@ -1039,7 +1009,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Int16Array",
             &[
-                ("Int16Array", Static, &[]),
+                ("Int16Array", Static, None, &[]),
             ],
             &[
             ],
@@ -1047,7 +1017,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Int32Array",
             &[
-                ("Int32Array", Static, &[]),
+                ("Int32Array", Static, None, &[]),
             ],
             &[
             ],
@@ -1055,10 +1025,10 @@ lazy_static! {
         JsGlobalObject::new(
             "Intl",
             &[
-                ("getCanonicalLocales", Static, &[
+                ("getCanonicalLocales", Static, None, &[
                         &[Any],
                     ]),
-                ("supportedValuesOf", Static, &[
+                ("supportedValuesOf", Static, None, &[
                         &[Any],
                     ]),
             ],
@@ -1068,48 +1038,48 @@ lazy_static! {
         JsGlobalObject::new(
             "Iterator",
             &[
-                ("Iterator", Static, &[]),
-                ("from", Static, &[
+                ("Iterator", Static, None, &[]),
+                ("from", Static, None, &[
                         &[Any],
                     ]),
-                ("drop", Instance, &[
+                ("drop", Instance, None, &[
                         &[Any],
                     ]),
-                ("every", Instance, &[
+                ("every", Instance, None, &[
                         &[Any],
                     ]),
-                ("filter", Instance, &[
+                ("filter", Instance, None, &[
                         &[Any],
                     ]),
-                ("find", Instance, &[
+                ("find", Instance, None, &[
                         &[Any],
                     ]),
-                ("flatMap", Instance, &[
+                ("flatMap", Instance, None, &[
                         &[Any],
                     ]),
-                ("forEach", Instance, &[
+                ("forEach", Instance, None, &[
                         &[Any],
                     ]),
-                ("map", Instance, &[
+                ("map", Instance, None, &[
                         &[Function],
                     ]),
-                ("reduce", Instance, &[
+                ("reduce", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("some", Instance, &[
+                ("some", Instance, None, &[
                         &[Any],
                     ]),
-                ("take", Instance, &[
+                ("take", Instance, None, &[
                         &[Any],
                     ]),
-                ("toArray", Instance, &[
+                ("toArray", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.dispose", Instance, &[
+                ("Symbol.dispose", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1119,17 +1089,17 @@ lazy_static! {
         JsGlobalObject::new(
             "JSON",
             &[
-                ("isRawJSON", Static, &[
+                ("isRawJSON", Static, None, &[
                         &[Any],
                     ]),
-                ("parse", Static, &[
+                ("parse", Static, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("rawJSON", Static, &[
+                ("rawJSON", Static, None, &[
                         &[Any],
                     ]),
-                ("stringify", Static, &[
+                ("stringify", Static, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
@@ -1141,39 +1111,39 @@ lazy_static! {
         JsGlobalObject::new(
             "Map",
             &[
-                ("Map", Static, &[]),
-                ("groupBy", Static, &[
+                ("Map", Static, None, &[]),
+                ("groupBy", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("clear", Instance, &[
+                ("clear", Instance, None, &[
                         &[],
                     ]),
-                ("delete", Instance, &[
+                ("delete", Instance, None, &[
                         &[Any],
                     ]),
-                ("entries", Instance, &[
+                ("entries", Instance, None, &[
                         &[],
                     ]),
-                ("forEach", Instance, &[
+                ("forEach", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("get", Instance, &[
+                ("get", Instance, None, &[
                         &[Any],
                     ]),
-                ("has", Instance, &[
+                ("has", Instance, None, &[
                         &[Any],
                     ]),
-                ("keys", Instance, &[
+                ("keys", Instance, None, &[
                         &[],
                     ]),
-                ("set", Instance, &[
+                ("set", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("values", Instance, &[
+                ("values", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1185,124 +1155,124 @@ lazy_static! {
         JsGlobalObject::new(
             "Math",
             &[
-                ("abs", Static, &[
+                ("abs", Static, None, &[
                         &[Any],
                     ]),
-                ("acos", Static, &[
+                ("acos", Static, None, &[
                         &[Any],
                     ]),
-                ("acosh", Static, &[
+                ("acosh", Static, None, &[
                         &[Any],
                     ]),
-                ("asin", Static, &[
+                ("asin", Static, None, &[
                         &[Any],
                     ]),
-                ("asinh", Static, &[
+                ("asinh", Static, None, &[
                         &[Any],
                     ]),
-                ("atan", Static, &[
+                ("atan", Static, None, &[
                         &[Any],
                     ]),
-                ("atan2", Static, &[
+                ("atan2", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("atanh", Static, &[
+                ("atanh", Static, None, &[
                         &[Any],
                     ]),
-                ("cbrt", Static, &[
+                ("cbrt", Static, None, &[
                         &[Any],
                     ]),
-                ("ceil", Static, &[
+                ("ceil", Static, None, &[
                         &[Any],
                     ]),
-                ("clz32", Static, &[
+                ("clz32", Static, None, &[
                         &[Any],
                     ]),
-                ("cos", Static, &[
+                ("cos", Static, None, &[
                         &[Any],
                     ]),
-                ("cosh", Static, &[
+                ("cosh", Static, None, &[
                         &[Any],
                     ]),
-                ("exp", Static, &[
+                ("exp", Static, None, &[
                         &[Any],
                     ]),
-                ("expm1", Static, &[
+                ("expm1", Static, None, &[
                         &[Any],
                     ]),
-                ("f16round", Static, &[
+                ("f16round", Static, None, &[
                         &[Any],
                     ]),
-                ("floor", Static, &[
+                ("floor", Static, None, &[
                         &[Any],
                     ]),
-                ("fround", Static, &[
+                ("fround", Static, None, &[
                         &[Any],
                     ]),
-                ("hypot", Static, &[
+                ("hypot", Static, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("imul", Static, &[
+                ("imul", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("log", Static, &[
+                ("log", Static, None, &[
                         &[Any],
                     ]),
-                ("log1p", Static, &[
+                ("log1p", Static, None, &[
                         &[Any],
                     ]),
-                ("log2", Static, &[
+                ("log2", Static, None, &[
                         &[Any],
                     ]),
-                ("log10", Static, &[
+                ("log10", Static, None, &[
                         &[Any],
                     ]),
-                ("max", Static, &[
+                ("max", Static, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("min", Static, &[
+                ("min", Static, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("pow", Static, &[
+                ("pow", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("random", Static, &[
+                ("random", Static, None, &[
                         &[],
                     ]),
-                ("round", Static, &[
+                ("round", Static, None, &[
                         &[Any],
                     ]),
-                ("sign", Static, &[
+                ("sign", Static, None, &[
                         &[Any],
                     ]),
-                ("sin", Static, &[
+                ("sin", Static, None, &[
                         &[Any],
                     ]),
-                ("sinh", Static, &[
+                ("sinh", Static, None, &[
                         &[Any],
                     ]),
-                ("sqrt", Static, &[
+                ("sqrt", Static, None, &[
                         &[Any],
                     ]),
-                ("sumPrecise", Static, &[
+                ("sumPrecise", Static, None, &[
                         &[Any],
                     ]),
-                ("tan", Static, &[
+                ("tan", Static, None, &[
                         &[Any],
                     ]),
-                ("tanh", Static, &[
+                ("tanh", Static, None, &[
                         &[Any],
                     ]),
-                ("trunc", Static, &[
+                ("trunc", Static, None, &[
                         &[Any],
                     ]),
             ],
@@ -1320,48 +1290,48 @@ lazy_static! {
         JsGlobalObject::new(
             "Number",
             &[
-                ("Number", Static, &[]),
-                ("isFinite", Static, &[
+                ("Number", Static, None, &[]),
+                ("isFinite", Static, None, &[
                         &[Any],
                     ]),
-                ("isInteger", Static, &[
+                ("isInteger", Static, None, &[
                         &[Any],
                     ]),
-                ("isNaN", Static, &[
+                ("isNaN", Static, None, &[
                         &[Any],
                     ]),
-                ("isSafeInteger", Static, &[
+                ("isSafeInteger", Static, None, &[
                         &[Any],
                     ]),
-                ("parseFloat", Static, &[
+                ("parseFloat", Static, None, &[
                         &[Any],
                     ]),
-                ("parseInt", Static, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("toExponential", Instance, &[
-                        &[],
-                        &[Any],
-                    ]),
-                ("toFixed", Instance, &[
-                        &[],
-                        &[Any],
-                    ]),
-                ("toLocaleString", Instance, &[
-                        &[],
+                ("parseInt", Static, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toPrecision", Instance, &[
+                ("toExponential", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("toString", Instance, &[
+                ("toFixed", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("valueOf", Instance, &[
+                ("toLocaleString", Instance, None, &[
+                        &[],
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("toPrecision", Instance, None, &[
+                        &[],
+                        &[Any],
+                    ]),
+                ("toString", Instance, Some(JsString), &[
+                        &[],
+                        &[Any],
+                    ]),
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1379,96 +1349,96 @@ lazy_static! {
         JsGlobalObject::new(
             "Object",
             &[
-                ("Object", Static, &[]),
-                ("assign", Static, &[
+                ("Object", Static, None, &[]),
+                ("assign", Static, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("create", Static, &[
+                ("create", Static, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("defineProperties", Static, &[
+                ("defineProperties", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("defineProperty", Static, &[
+                ("defineProperty", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("entries", Static, &[
+                ("entries", Static, None, &[
                         &[Any],
                     ]),
-                ("freeze", Static, &[
+                ("freeze", Static, None, &[
                         &[Any],
                     ]),
-                ("fromEntries", Static, &[
+                ("fromEntries", Static, None, &[
                         &[Any],
                     ]),
-                ("getOwnPropertyDescriptor", Static, &[
+                ("getOwnPropertyDescriptor", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("getOwnPropertyDescriptors", Static, &[
+                ("getOwnPropertyDescriptors", Static, None, &[
                         &[Any],
                     ]),
-                ("getOwnPropertyNames", Static, &[
+                ("getOwnPropertyNames", Static, None, &[
                         &[Any],
                     ]),
-                ("getOwnPropertySymbols", Static, &[
+                ("getOwnPropertySymbols", Static, None, &[
                         &[Any],
                     ]),
-                ("getPrototypeOf", Static, &[
+                ("getPrototypeOf", Static, None, &[
                         &[Any],
                     ]),
-                ("groupBy", Static, &[
+                ("groupBy", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("hasOwn", Static, &[
+                ("hasOwn", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("is", Static, &[
+                ("is", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("isExtensible", Static, &[
+                ("isExtensible", Static, None, &[
                         &[Any],
                     ]),
-                ("isFrozen", Static, &[
+                ("isFrozen", Static, None, &[
                         &[Any],
                     ]),
-                ("isSealed", Static, &[
+                ("isSealed", Static, None, &[
                         &[Any],
                     ]),
-                ("keys", Static, &[
+                ("keys", Static, None, &[
                         &[Any],
                     ]),
-                ("preventExtensions", Static, &[
+                ("preventExtensions", Static, None, &[
                         &[Any],
                     ]),
-                ("seal", Static, &[
+                ("seal", Static, None, &[
                         &[Any],
                     ]),
-                ("setPrototypeOf", Static, &[
+                ("setPrototypeOf", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("values", Static, &[
+                ("values", Static, None, &[
                         &[Any],
                     ]),
-                ("hasOwnProperty", Instance, &[
+                ("hasOwnProperty", Instance, None, &[
                         &[Any],
                     ]),
-                ("isPrototypeOf", Instance, &[
+                ("isPrototypeOf", Instance, None, &[
                         &[Any],
                     ]),
-                ("propertyIsEnumerable", Instance, &[
+                ("propertyIsEnumerable", Instance, None, &[
                         &[Any],
                     ]),
-                ("toLocaleString", Instance, &[
+                ("toLocaleString", Instance, None, &[
                         &[],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1479,41 +1449,41 @@ lazy_static! {
         JsGlobalObject::new(
             "Promise",
             &[
-                ("Promise", Static, &[]),
-                ("all", Static, &[
+                ("Promise", Static, None, &[]),
+                ("all", Static, None, &[
                         &[Any],
                     ]),
-                ("allSettled", Static, &[
+                ("allSettled", Static, None, &[
                         &[Any],
                     ]),
-                ("any", Static, &[
+                ("any", Static, None, &[
                         &[Any],
                     ]),
-                ("race", Static, &[
+                ("race", Static, None, &[
                         &[Any],
                     ]),
-                ("reject", Static, &[
+                ("reject", Static, None, &[
                         &[Any],
                     ]),
-                ("resolve", Static, &[
+                ("resolve", Static, None, &[
                         &[Any],
                     ]),
-                ("try", Static, &[
+                ("try", Static, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("withResolvers", Static, &[
+                ("withResolvers", Static, None, &[
                         &[],
                     ]),
-                ("catch", Instance, &[
+                ("catch", Instance, None, &[
                         &[Any],
                     ]),
-                ("finally", Instance, &[
+                ("finally", Instance, None, &[
                         &[Any],
                     ]),
-                ("then", Instance, &[
+                ("then", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
@@ -1525,8 +1495,8 @@ lazy_static! {
         JsGlobalObject::new(
             "Proxy",
             &[
-                ("Proxy", Static, &[]),
-                ("revocable", Static, &[
+                ("Proxy", Static, None, &[]),
+                ("revocable", Static, None, &[
                         &[Any, Any],
                     ]),
             ],
@@ -1536,7 +1506,7 @@ lazy_static! {
         JsGlobalObject::new(
             "RangeError",
             &[
-                ("RangeError", Static, &[]),
+                ("RangeError", Static, None, &[]),
             ],
             &[
             ],
@@ -1544,7 +1514,7 @@ lazy_static! {
         JsGlobalObject::new(
             "ReferenceError",
             &[
-                ("ReferenceError", Static, &[]),
+                ("ReferenceError", Static, None, &[]),
             ],
             &[
             ],
@@ -1552,46 +1522,46 @@ lazy_static! {
         JsGlobalObject::new(
             "Reflect",
             &[
-                ("apply", Static, &[
+                ("apply", Static, None, &[
                         &[Any, Any, Any],
                     ]),
-                ("construct", Static, &[
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("defineProperty", Static, &[
-                        &[Any, Any, Any],
-                    ]),
-                ("deleteProperty", Static, &[
-                        &[Any, Any],
-                    ]),
-                ("get", Static, &[
+                ("construct", Static, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("getOwnPropertyDescriptor", Static, &[
+                ("defineProperty", Static, None, &[
+                        &[Any, Any, Any],
+                    ]),
+                ("deleteProperty", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("getPrototypeOf", Static, &[
-                        &[Any],
+                ("get", Static, None, &[
+                        &[Any, Any],
+                        &[Any, Any, Any],
                     ]),
-                ("has", Static, &[
+                ("getOwnPropertyDescriptor", Static, None, &[
                         &[Any, Any],
                     ]),
-                ("isExtensible", Static, &[
+                ("getPrototypeOf", Static, None, &[
                         &[Any],
                     ]),
-                ("ownKeys", Static, &[
+                ("has", Static, None, &[
+                        &[Any, Any],
+                    ]),
+                ("isExtensible", Static, None, &[
                         &[Any],
                     ]),
-                ("preventExtensions", Static, &[
+                ("ownKeys", Static, None, &[
                         &[Any],
                     ]),
-                ("set", Static, &[
+                ("preventExtensions", Static, None, &[
+                        &[Any],
+                    ]),
+                ("set", Static, None, &[
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                     ]),
-                ("setPrototypeOf", Static, &[
+                ("setPrototypeOf", Static, None, &[
                         &[Any, Any],
                     ]),
             ],
@@ -1601,32 +1571,32 @@ lazy_static! {
         JsGlobalObject::new(
             "RegExp",
             &[
-                ("RegExp", Static, &[]),
-                ("escape", Static, &[
+                ("RegExp", Static, None, &[]),
+                ("escape", Static, None, &[
                         &[Any],
                     ]),
-                ("exec", Instance, &[
+                ("exec", Instance, None, &[
                         &[Any],
                     ]),
-                ("test", Instance, &[
+                ("test", Instance, None, &[
                         &[Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("Symbol.match", Instance, &[
+                ("Symbol.match", Instance, None, &[
                         &[Any],
                     ]),
-                ("Symbol.matchAll", Instance, &[
+                ("Symbol.matchAll", Instance, None, &[
                         &[Any],
                     ]),
-                ("Symbol.replace", Instance, &[
+                ("Symbol.replace", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("Symbol.search", Instance, &[
+                ("Symbol.search", Instance, None, &[
                         &[Any],
                     ]),
-                ("Symbol.split", Instance, &[
+                ("Symbol.split", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
@@ -1649,54 +1619,54 @@ lazy_static! {
         JsGlobalObject::new(
             "Set",
             &[
-                ("Set", Static, &[]),
-                ("add", Instance, &[
+                ("Set", Static, None, &[]),
+                ("add", Instance, None, &[
                         &[Any],
                     ]),
-                ("clear", Instance, &[
+                ("clear", Instance, None, &[
                         &[],
                     ]),
-                ("delete", Instance, &[
+                ("delete", Instance, None, &[
                         &[Any],
                     ]),
-                ("difference", Instance, &[
+                ("difference", Instance, None, &[
                         &[Any],
                     ]),
-                ("entries", Instance, &[
+                ("entries", Instance, None, &[
                         &[],
                     ]),
-                ("forEach", Instance, &[
+                ("forEach", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("has", Instance, &[
+                ("has", Instance, None, &[
                         &[Any],
                     ]),
-                ("intersection", Instance, &[
+                ("intersection", Instance, None, &[
                         &[Any],
                     ]),
-                ("isDisjointFrom", Instance, &[
+                ("isDisjointFrom", Instance, None, &[
                         &[Any],
                     ]),
-                ("isSubsetOf", Instance, &[
+                ("isSubsetOf", Instance, None, &[
                         &[Any],
                     ]),
-                ("isSupersetOf", Instance, &[
+                ("isSupersetOf", Instance, None, &[
                         &[Any],
                     ]),
-                ("keys", Instance, &[
+                ("keys", Instance, None, &[
                         &[],
                     ]),
-                ("symmetricDifference", Instance, &[
+                ("symmetricDifference", Instance, None, &[
                         &[Any],
                     ]),
-                ("union", Instance, &[
+                ("union", Instance, None, &[
                         &[Any],
                     ]),
-                ("values", Instance, &[
+                ("values", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1708,11 +1678,11 @@ lazy_static! {
         JsGlobalObject::new(
             "SharedArrayBuffer",
             &[
-                ("SharedArrayBuffer", Static, &[]),
-                ("grow", Instance, &[
+                ("SharedArrayBuffer", Static, None, &[]),
+                ("grow", Instance, None, &[
                         &[Any],
                     ]),
-                ("slice", Instance, &[
+                ("slice", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
@@ -1728,146 +1698,146 @@ lazy_static! {
         JsGlobalObject::new(
             "String",
             &[
-                ("String", Static, &[]),
-                ("fromCharCode", Static, &[
+                ("String", Static, None, &[]),
+                ("fromCharCode", Static, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("fromCodePoint", Static, &[
+                ("fromCodePoint", Static, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("raw", Static, &[
+                ("raw", Static, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                         &[Any, Any, Any, Any],
                         &[],
                     ]),
-                ("at", Instance, &[
+                ("at", Instance, None, &[
                         &[Any],
                     ]),
-                ("charAt", Instance, &[
+                ("charAt", Instance, None, &[
                         &[Any],
                     ]),
-                ("charCodeAt", Instance, &[
+                ("charCodeAt", Instance, None, &[
                         &[Any],
                     ]),
-                ("codePointAt", Instance, &[
+                ("codePointAt", Instance, None, &[
                         &[Any],
                     ]),
-                ("concat", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("endsWith", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("includes", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("indexOf", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("isWellFormed", Instance, &[
-                        &[],
-                    ]),
-                ("lastIndexOf", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("localeCompare", Instance, &[
+                ("concat", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("match", Instance, &[
-                        &[Any],
-                    ]),
-                ("matchAll", Instance, &[
-                        &[Any],
-                    ]),
-                ("normalize", Instance, &[
-                        &[],
-                        &[Any],
-                    ]),
-                ("padEnd", Instance, &[
+                ("endsWith", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("padStart", Instance, &[
+                ("includes", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("repeat", Instance, &[
-                        &[Any],
-                    ]),
-                ("replace", Instance, &[
-                        &[Any, Any],
-                    ]),
-                ("replaceAll", Instance, &[
-                        &[Any, Any],
-                    ]),
-                ("search", Instance, &[
-                        &[Any],
-                    ]),
-                ("slice", Instance, &[
+                ("indexOf", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("split", Instance, &[
+                ("isWellFormed", Instance, None, &[
+                        &[],
+                    ]),
+                ("lastIndexOf", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("startsWith", Instance, &[
+                ("localeCompare", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("match", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("matchAll", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("normalize", Instance, None, &[
+                        &[],
+                        &[Any],
+                    ]),
+                ("padEnd", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("substring", Instance, &[
+                ("padStart", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toLocaleLowerCase", Instance, &[
+                ("repeat", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("replace", Instance, None, &[
+                        &[Any, Any],
+                    ]),
+                ("replaceAll", Instance, None, &[
+                        &[Any, Any],
+                    ]),
+                ("search", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("slice", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("split", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("startsWith", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("substring", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("toLocaleLowerCase", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("toLocaleUpperCase", Instance, &[
+                ("toLocaleUpperCase", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("toLowerCase", Instance, &[
+                ("toLowerCase", Instance, None, &[
                         &[],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("toUpperCase", Instance, &[
+                ("toUpperCase", Instance, None, &[
                         &[],
                     ]),
-                ("toWellFormed", Instance, &[
+                ("toWellFormed", Instance, None, &[
                         &[],
                     ]),
-                ("trim", Instance, &[
+                ("trim", Instance, None, &[
                         &[],
                     ]),
-                ("trimEnd", Instance, &[
+                ("trimEnd", Instance, None, &[
                         &[],
                     ]),
-                ("trimStart", Instance, &[
+                ("trimStart", Instance, None, &[
                         &[],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -1878,7 +1848,7 @@ lazy_static! {
         JsGlobalObject::new(
             "SuppressedError",
             &[
-                ("SuppressedError", Static, &[]),
+                ("SuppressedError", Static, None, &[]),
             ],
             &[
                 ("error", Instance),
@@ -1888,20 +1858,20 @@ lazy_static! {
         JsGlobalObject::new(
             "Symbol",
             &[
-                ("Symbol", Static, &[]),
-                ("for", Static, &[
+                ("Symbol", Static, None, &[]),
+                ("for", Static, None, &[
                         &[Any],
                     ]),
-                ("keyFor", Static, &[
+                ("keyFor", Static, None, &[
                         &[Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("valueOf", Instance, &[
+                ("valueOf", Instance, None, &[
                         &[],
                     ]),
-                ("Symbol.toPrimitive", Instance, &[
+                ("Symbol.toPrimitive", Instance, None, &[
                         &[Any],
                     ]),
             ],
@@ -1927,7 +1897,7 @@ lazy_static! {
         JsGlobalObject::new(
             "SyntaxError",
             &[
-                ("SyntaxError", Static, &[]),
+                ("SyntaxError", Static, None, &[]),
             ],
             &[
             ],
@@ -1935,137 +1905,137 @@ lazy_static! {
         JsGlobalObject::new(
             "TypedArray",
             &[
-                ("from", Static, &[
+                ("from", Static, None, &[
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("of", Static, &[
+                ("of", Static, None, &[
                         &[],
-                        &[Any],
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("at", Instance, &[
-                        &[Any],
-                    ]),
-                ("copyWithin", Instance, &[
-                        &[Any, Any],
-                        &[Any, Any, Any],
-                    ]),
-                ("entries", Instance, &[
-                        &[],
-                    ]),
-                ("every", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("fill", Instance, &[
                         &[Any],
                         &[Any, Any],
                         &[Any, Any, Any],
                     ]),
-                ("filter", Instance, &[
+                ("at", Instance, None, &[
+                        &[Any],
+                    ]),
+                ("copyWithin", Instance, None, &[
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("entries", Instance, None, &[
+                        &[],
+                    ]),
+                ("every", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("find", Instance, &[
+                ("fill", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                        &[Any, Any, Any],
+                    ]),
+                ("filter", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("findIndex", Instance, &[
+                ("find", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("findLast", Instance, &[
+                ("findIndex", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("findLastIndex", Instance, &[
+                ("findLast", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("forEach", Instance, &[
+                ("findLastIndex", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("includes", Instance, &[
+                ("forEach", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("indexOf", Instance, &[
+                ("includes", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("join", Instance, &[
+                ("indexOf", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("join", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("keys", Instance, &[
+                ("keys", Instance, None, &[
                         &[],
                     ]),
-                ("lastIndexOf", Instance, &[
+                ("lastIndexOf", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("map", Instance, &[
+                ("map", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("reduce", Instance, &[
+                ("reduce", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("reduceRight", Instance, &[
+                ("reduceRight", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("reverse", Instance, &[
+                ("reverse", Instance, None, &[
                         &[],
                     ]),
-                ("set", Instance, &[
+                ("set", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("slice", Instance, &[
-                        &[],
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("some", Instance, &[
-                        &[Any],
-                        &[Any, Any],
-                    ]),
-                ("sort", Instance, &[
-                        &[],
-                        &[Any],
-                    ]),
-                ("subarray", Instance, &[
+                ("slice", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toLocaleString", Instance, &[
+                ("some", Instance, None, &[
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("sort", Instance, None, &[
+                        &[],
+                        &[Any],
+                    ]),
+                ("subarray", Instance, None, &[
                         &[],
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("toReversed", Instance, &[
+                ("toLocaleString", Instance, None, &[
+                        &[],
+                        &[Any],
+                        &[Any, Any],
+                    ]),
+                ("toReversed", Instance, None, &[
                         &[],
                     ]),
-                ("toSorted", Instance, &[
+                ("toSorted", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("toString", Instance, &[
+                ("toString", Instance, Some(JsString), &[
                         &[],
                     ]),
-                ("values", Instance, &[
+                ("values", Instance, None, &[
                         &[],
                     ]),
-                ("with", Instance, &[
+                ("with", Instance, None, &[
                         &[Any, Any],
                     ]),
-                ("Symbol.iterator", Instance, &[
+                ("Symbol.iterator", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -2081,7 +2051,7 @@ lazy_static! {
         JsGlobalObject::new(
             "TypeError",
             &[
-                ("TypeError", Static, &[]),
+                ("TypeError", Static, None, &[]),
             ],
             &[
             ],
@@ -2089,26 +2059,26 @@ lazy_static! {
         JsGlobalObject::new(
             "Uint8Array",
             &[
-                ("Uint8Array", Static, &[]),
-                ("fromBase64", Static, &[
+                ("Uint8Array", Static, None, &[]),
+                ("fromBase64", Static, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("fromHex", Static, &[
+                ("fromHex", Static, None, &[
                         &[Any],
                     ]),
-                ("setFromBase64", Instance, &[
+                ("setFromBase64", Instance, None, &[
                         &[Any],
                         &[Any, Any],
                     ]),
-                ("setFromHex", Instance, &[
+                ("setFromHex", Instance, None, &[
                         &[Any],
                     ]),
-                ("toBase64", Instance, &[
+                ("toBase64", Instance, None, &[
                         &[],
                         &[Any],
                     ]),
-                ("toHex", Instance, &[
+                ("toHex", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -2118,7 +2088,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Uint8ClampedArray",
             &[
-                ("Uint8ClampedArray", Static, &[]),
+                ("Uint8ClampedArray", Static, None, &[]),
             ],
             &[
             ],
@@ -2126,7 +2096,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Uint16Array",
             &[
-                ("Uint16Array", Static, &[]),
+                ("Uint16Array", Static, None, &[]),
             ],
             &[
             ],
@@ -2134,7 +2104,7 @@ lazy_static! {
         JsGlobalObject::new(
             "Uint32Array",
             &[
-                ("Uint32Array", Static, &[]),
+                ("Uint32Array", Static, None, &[]),
             ],
             &[
             ],
@@ -2142,7 +2112,7 @@ lazy_static! {
         JsGlobalObject::new(
             "URIError",
             &[
-                ("URIError", Static, &[]),
+                ("URIError", Static, None, &[]),
             ],
             &[
             ],
@@ -2150,17 +2120,17 @@ lazy_static! {
         JsGlobalObject::new(
             "WeakMap",
             &[
-                ("WeakMap", Static, &[]),
-                ("delete", Instance, &[
+                ("WeakMap", Static, None, &[]),
+                ("delete", Instance, None, &[
                         &[Any],
                     ]),
-                ("get", Instance, &[
+                ("get", Instance, None, &[
                         &[Any],
                     ]),
-                ("has", Instance, &[
+                ("has", Instance, None, &[
                         &[Any],
                     ]),
-                ("set", Instance, &[
+                ("set", Instance, None, &[
                         &[Any, Any],
                     ]),
             ],
@@ -2170,8 +2140,8 @@ lazy_static! {
         JsGlobalObject::new(
             "WeakRef",
             &[
-                ("WeakRef", Static, &[]),
-                ("deref", Instance, &[
+                ("WeakRef", Static, None, &[]),
+                ("deref", Instance, None, &[
                         &[],
                     ]),
             ],
@@ -2181,14 +2151,14 @@ lazy_static! {
         JsGlobalObject::new(
             "WeakSet",
             &[
-                ("WeakSet", Static, &[]),
-                ("add", Instance, &[
+                ("WeakSet", Static, None, &[]),
+                ("add", Instance, None, &[
                         &[Any],
                     ]),
-                ("delete", Instance, &[
+                ("delete", Instance, None, &[
                         &[Any],
                     ]),
-                ("has", Instance, &[
+                ("has", Instance, None, &[
                         &[Any],
                     ]),
             ],

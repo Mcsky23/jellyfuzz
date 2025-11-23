@@ -132,7 +132,7 @@ fn build_arg_expr(ty: JsObjectType, value_pool: &[String]) -> Expr {
             }))
         }
         JsObjectType::JsString => {
-            let choices = ["foo", "bar", "baz", "qux", "こんにちは"];
+            let choices = ["foo", "bar", "baz", "mcsky", "こんにちは"];
             let s = choices.choose(&mut rng).copied().unwrap_or("s");
             Expr::Lit(Lit::Str(Str {
                 span: DUMMY_SP,
@@ -192,4 +192,98 @@ fn build_arg_expr(ty: JsObjectType, value_pool: &[String]) -> Expr {
             build_arg_expr(concrete, value_pool)
         }
     }
+}
+
+/// Build a random literal expression
+pub fn build_random_literal(ty: JsObjectType) -> Expr {
+    let mut rng = rand::rngs::ThreadRng::default();
+    match ty {
+        // Boolean is easiest so start with it lol
+        JsObjectType::Boolean => {
+            let v = rng.random_bool(0.5);
+            Expr::Lit(Lit::Bool(Bool {
+                span: DUMMY_SP,
+                value: v,
+            }))
+        }
+        JsObjectType::Number => {
+            // There is a chance to also set a BigNum(42n)
+            if rng.random_bool(0.1) {
+                // there is also a chance to generate a HUGE bigint
+                if rng.random_bool(0.1) {
+                    // TODO: implement bigints larger than i64
+                    // https://issues.chromium.org/issues/40056682
+                    let v = rng.random_range(-1_000_000_000_000i64..=1_000_000_000_000i64);
+                    return Expr::Lit(Lit::BigInt(BigInt {
+                        span: DUMMY_SP,
+                        value: Box::new(v.into()),
+                        raw: None,
+                    }));
+                } else {
+                let v = rng.random_range(-1000i64..=1000i64);
+                    return Expr::Lit(Lit::BigInt(BigInt {
+                        span: DUMMY_SP,
+                        value: Box::new(v.into()),
+                        raw: None,
+                    }));
+                }
+            }
+            // Bias toward interesting edge numbers.
+            let specials = [0.0f64, -0.0, -1.0, 1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0xffff_ffffu32 as f64];
+            let v = if rng.random_bool(0.15) {
+                *specials.choose(&mut rng).unwrap_or(&0.0)
+            } else {
+                rng.random_range(-16i32..=128i32) as f64
+            };
+            Expr::Lit(Lit::Num(Number {
+                span: DUMMY_SP,
+                value: v,
+                raw: None,
+            }))
+        }
+        JsObjectType::JsString => {
+            let choices = ["foo", "bar", "baz", "mcsky", "こんにちは"];
+            let s = choices.choose(&mut rng).copied().unwrap_or("s");
+            Expr::Lit(Lit::Str(Str {
+                span: DUMMY_SP,
+                value: Atom::from(s).into(),
+                raw: None,
+            }))
+        }
+        // For Object return somehting like {x: 42}
+        JsObjectType::Object => {
+            let mut prop_keys = vec!["x", "y", "z", "foo", "bar"];
+            // choose 1-3 properties
+            let num_props = rng.random_range(1..=3);
+            let mut props = Vec::new();
+            for _ in 0..num_props {
+                let key = prop_keys.choose(&mut rng).copied().unwrap_or("key");
+                prop_keys.retain(|&k| k != key);
+                let value_expr = build_random_literal(JsObjectType::Number);
+                let prop = PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                    key: PropName::Ident(IdentName::new(Atom::from(key), DUMMY_SP)),
+                    value: Box::new(value_expr),
+                })));
+                props.push(prop);
+            }
+            Expr::Object(ObjectLit {
+                span: DUMMY_SP,
+                props,
+            })
+        }
+        _ => {
+            // Fallback to null
+            // TODO: implement other types
+            Expr::Lit(Lit::Null(Null { span: DUMMY_SP }))
+        }
+    }
+}
+
+pub fn build_ident_expr_from_str(name: &str) -> Expr {
+    Ident {
+        span: DUMMY_SP,
+        sym: Atom::from(name),
+        optional: false,
+        ctxt: SyntaxContext::empty(),
+    }.into()
 }
