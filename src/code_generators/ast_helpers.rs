@@ -191,6 +191,10 @@ fn build_arg_expr(ty: JsObjectType, value_pool: &[String]) -> Expr {
             };
             build_arg_expr(concrete, value_pool)
         }
+        _ => {
+            // Fallback to null
+            Expr::Lit(Lit::Null(Null { span: DUMMY_SP }))
+        }
     }
 }
 

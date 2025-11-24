@@ -117,6 +117,17 @@ impl JsGlobalObject {
             _ => panic!("No global object for type {:?}", ty),
         }
     }
+
+    pub fn to_js_type(&self) -> JsObjectType {
+        match self.sym.as_str() {
+            "Array" => JsObjectType::Array,
+            "Boolean" => JsObjectType::Boolean,
+            "Number" => JsObjectType::Number,
+            "String" => JsObjectType::JsString,
+            "Object" => JsObjectType::Object,
+            _ => JsObjectType::Object, // default to Object for unknown types
+        }
+    }
 }
 
 impl JsMethod {

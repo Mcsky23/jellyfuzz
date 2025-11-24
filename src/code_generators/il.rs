@@ -28,6 +28,9 @@
 // - 
 // - TODO: Control flow, loops, functions
 
+use rand::seq::IndexedRandom;
+use serde::de;
+
 use crate::mutators::js_objects::{js_objects::JsGlobalObject, js_types::JsObjectType};
 
 /// Represents a single instruction.
@@ -45,6 +48,18 @@ pub struct BlockId(pub usize);
 #[derive(Clone, Debug)]
 /// Information about a value, including its type.
 struct ValueInfo { type_info: JsObjectType }
+
+impl std::fmt::Debug for ValueId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "v{}", self.0)
+    }
+}
+
+impl std::fmt::Debug for BlockId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "b{}", self.0)
+    }
+}
 
 /// A basic block is defined by it's id, a list of arguments(values that are used inside it which 
 /// are defined outside it), a list of instructions, and a terminator instruction that defines
@@ -86,7 +101,8 @@ pub struct JellIL {
     top_level: FunctionIL,
 }
 
-enum LiteralValue {
+#[derive(Clone, Debug)]
+pub enum LiteralValue {
     Number(f64),
     String(String),
     Boolean(bool),
@@ -95,7 +111,8 @@ enum LiteralValue {
     Undefined,
 }
 
-enum BinaryOperator {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryOperator {
     Add,
     Sub,
     Mul,
@@ -109,6 +126,36 @@ enum BinaryOperator {
     LShift,
     RShift,
     ZeroFillRShift,
+}
+
+impl BinaryOperator {
+    pub fn get_random_operator(rng: &mut rand::rngs::ThreadRng) -> Self {
+        use BinaryOperator::*;
+        let operators = vec![
+            Add, Sub, Mul, Div, Mod, Exp,
+            BitOr, BitAnd, BitXor, LShift, RShift, ZeroFillRShift,
+        ];
+        *operators.choose(rng).unwrap()
+    }
+}
+
+impl std::fmt::Debug for BinaryOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinaryOperator::Add => write!(f, "+"),
+            BinaryOperator::Sub => write!(f, "-"),
+            BinaryOperator::Mul => write!(f, "*"),
+            BinaryOperator::Div => write!(f, "/"),
+            BinaryOperator::Mod => write!(f, "%"),
+            BinaryOperator::Exp => write!(f, "**"),
+            BinaryOperator::BitOr => write!(f, "|"),
+            BinaryOperator::BitAnd => write!(f, "&"),
+            BinaryOperator::BitXor => write!(f, "^"),
+            BinaryOperator::LShift => write!(f, "<<"),
+            BinaryOperator::RShift => write!(f, ">>"),
+            BinaryOperator::ZeroFillRShift => write!(f, ">>>"),
+        }
+    }
 }
 
 pub enum InstrKind {
@@ -133,19 +180,104 @@ pub enum InstrKind {
     IfElse { condition: ValueId, then_branch: Vec<Instr>, else_branch: Vec<Instr> }, 
 }
 
-struct BlockBuilder<'a> {
+impl std::fmt::Debug for InstrKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstrKind::LoadLiteral(lit) => write!(f, "LoadLiteral({:?})", lit),
+            InstrKind::LoadVar(name) => write!(f, "LoadVar({})", name),
+            InstrKind::StoreVar(name, value) => write!(f, "StoreVar({}, {:?})", name, value),
+            InstrKind::BinaryOp { op, left, right } => write!(f, "BinaryOp({:?}, {:?}, {:?})", op, left, right),
+            InstrKind::LoadProp { obj, prop } => write!(f, "LoadProp({:?}, {})", obj, prop),
+            InstrKind::StoreProp { obj, prop, value } => write!(f, "StoreProp({:?}, {}, {:?})", obj, prop, value),
+            InstrKind::LoadElem { obj, index } => write!(f, "LoadElem({:?}, {:?})", obj, index),
+            InstrKind::StoreElem { obj, index, value } => write!(f, "StoreElem({:?}, {:?}, {:?})", obj, index, value),
+            InstrKind::LoadFunc(name) => write!(f, "LoadFunc({})", name),
+            InstrKind::CallFunc { func, args } => write!(f, "CallFunc({:?}, {:?})", func, args),
+            InstrKind::CallMethod { obj, method, args } => write!(f, "CallMethod({:?}, {}, {:?})", obj, method, args),
+            InstrKind::NewObject(obj_type, args) => write!(f, "NewObject({:?}, {:?})", obj_type, args),
+            InstrKind::IfElse { condition, then_branch: _, else_branch: _ } => write!(f, "IfElse({:?}, <then_branch>, <else_branch>)", condition),
+        }
+    }
+}
+
+impl std::fmt::Debug for Instr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} = {:?}", self.id, self.kind)
+    }
+}
+
+impl std::fmt::Debug for BasicBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Block {:?} Args: {:?}", self.id, self.args)?;
+        for instr in &self.instrs {
+            writeln!(f, "  {:?}", instr)?;
+        }
+        writeln!(f, "  Terminator: {:?}", self.terminator)
+    }
+}
+
+impl std::fmt::Debug for BlockTerminator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlockTerminator::Goto { target, args } => write!(f, "Goto {:?} Args: {:?}", target, args),
+            BlockTerminator::IfElse { condition, then_block, then_args, else_block, else_args } => {
+                write!(f, "IfElse Cond: {:?} Then: {:?} Args: {:?} Else: {:?} Args: {:?}", 
+                    condition, then_block, then_args, else_block, else_args)
+            },
+            BlockTerminator::Return(ret) => write!(f, "Return {:?}", ret),
+        }
+    }
+}
+
+
+impl std::fmt::Debug for FunctionIL {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Function {:?} Entry: {:?}", self.name, self.entry)?;
+        for block in &self.blocks {
+            writeln!(f, "{:?}", block)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for JellIL {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Top Level Function:")?;
+        writeln!(f, "{:?}", self.top_level)?;
+        for func in &self.functions {
+            writeln!(f, "Function:")?;
+            writeln!(f, "{:?}", func)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct BlockBuilder<'a> {
     block: BasicBlock,
-    block_id: BlockId,
     builder: &'a mut FunctionILBuilder,
 }
 
-struct FunctionILBuilder {
+pub struct FunctionILBuilder {
     next_value: usize,
     next_block: usize,
     func: FunctionIL,
 }
 
-impl BlockBuilder<'_> {
+impl<'a> BlockBuilder<'a> {
+    pub fn new(args: Vec<ValueId>, builder: &'a mut FunctionILBuilder) -> BlockBuilder<'a> {
+        let block_id = BlockId(builder.next_block);
+        builder.next_block += 1;
+        Self {
+            block: BasicBlock {
+                id: block_id,
+                args,
+                instrs: Vec::new(),
+                terminator: BlockTerminator::Return(None), // placeholder
+            },
+            builder,
+        }
+    }
+
     pub fn add_instr(&mut self, kind: InstrKind, ty: JsObjectType) -> ValueId {
         let v = self.builder.new_value(ty);
         let instr = Instr { id: v, kind };
@@ -157,12 +289,20 @@ impl BlockBuilder<'_> {
         self.block.terminator = term;
     }
 
-    pub fn finish(self) {
+    pub fn finish(self) -> BlockId {
+        let block_id = self.block.id;
         self.builder.func.blocks.push(self.block);
+        block_id
     }
 
-    pub fn id(&self) -> BlockId {
-        self.block_id
+    pub fn get_values_of_type(&self, type_info: JsObjectType) -> Vec<ValueId> {
+        self.builder.get_values_of_type(type_info)
+    }
+
+    pub fn get_all_values(&self) -> Vec<ValueId> {
+        self.builder.func.values.iter().enumerate()
+            .map(|(idx, _)| ValueId(idx))
+            .collect()
     }
 
     // =========================== Code Generation Helpers ===========================
@@ -179,6 +319,7 @@ impl BlockBuilder<'_> {
         )
     }
 
+    // TODO: infer type based LiteralValue
     pub fn add_load_literal(&mut self, value: LiteralValue, ty: JsObjectType) -> ValueId {
         self.add_instr(
             InstrKind::LoadLiteral(value),
@@ -233,6 +374,40 @@ impl BlockBuilder<'_> {
         )
     }
 
+    pub fn add_load_func(&mut self, name: String) -> ValueId {
+        self.add_instr(
+            InstrKind::LoadFunc(name),
+            JsObjectType::Function,
+        )
+    }
+
+    pub fn add_call_func(
+        &mut self, func: ValueId, args: Vec<ValueId>, ty: JsObjectType
+    ) -> ValueId {
+        self.add_instr(
+            InstrKind::CallFunc { func, args },
+            ty,
+        )
+    }
+
+    pub fn add_call_method(
+        &mut self, obj: ValueId, method: String, args: Vec<ValueId>, ty: JsObjectType
+    ) -> ValueId {
+        self.add_instr(
+            InstrKind::CallMethod { obj, method, args },
+            ty,
+        )
+    }
+
+    pub fn add_new_object(
+        &mut self, obj_type: JsGlobalObject, args: Vec<ValueId>
+    ) -> ValueId {
+        let ty = obj_type.to_js_type();
+        self.add_instr(
+            InstrKind::NewObject(obj_type, args),
+            ty,
+        )
+    }
 }
 
 impl FunctionILBuilder {
@@ -249,16 +424,8 @@ impl FunctionILBuilder {
         }
     }
 
-    pub fn new_block(&mut self, args: Vec<ValueId>) -> BlockId {
-        let block_id = BlockId(self.next_block);
-        self.next_block += 1;
-        self.func.blocks.push(BasicBlock {
-            id: block_id,
-            args,
-            instrs: Vec::new(),
-            terminator: BlockTerminator::Return(None), // placeholder
-        });
-        block_id
+    pub fn new_block_builder(&mut self, args: Vec<ValueId>) -> BlockBuilder {
+        BlockBuilder::new(args, self)
     }
 
     pub fn new_value(&mut self, type_info: JsObjectType) -> ValueId {
@@ -266,6 +433,18 @@ impl FunctionILBuilder {
         self.next_value += 1;
         self.func.values.push(ValueInfo { type_info });
         value_id
+    }
+
+    pub fn get_values_of_type(&self, type_info: JsObjectType) -> Vec<ValueId> {
+        self.func.values.iter().enumerate()
+            .filter_map(|(idx, vinfo)| {
+                if vinfo.type_info == type_info {
+                    Some(ValueId(idx))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn add_block_param(&mut self, block_id: BlockId, type_info: JsObjectType) -> ValueId {
@@ -324,10 +503,41 @@ impl JellIL {
     pub fn add_function(&mut self, func: FunctionIL) {
         self.functions.push(func);
     }
+
+    pub fn set_top_level(&mut self, func: FunctionIL) {
+        self.top_level = func;
+    }
 }
 
 pub fn generate_random_il() -> JellIL {
     let mut il = JellIL::new();
-
+    // for now just generate a default program
+    let mut func = FunctionILBuilder::new(Some("main".to_string()));
+    let mut block_builder = func.new_block_builder(Vec::new());
+    let lhs = block_builder.add_load_literal(
+        LiteralValue::Number(42.0),
+        JsObjectType::Number,
+    );
+    let rhs = block_builder.add_load_literal(
+        LiteralValue::Number(58.0),
+        JsObjectType::Number,
+    );
+    let res = block_builder
+        .add_binary_op(BinaryOperator::Add, lhs, rhs, JsObjectType::Number);
+    block_builder.set_terminator(BlockTerminator::Return(Some(res)));
+    block_builder.finish();
+    let function_il = func.finish();
+    il.top_level = function_il;
     il
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_random_il() {
+        let il = generate_random_il();
+        println!("{:#?}", il.top_level);
+    }
 }
